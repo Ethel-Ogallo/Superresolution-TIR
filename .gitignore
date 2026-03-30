@@ -1,5 +1,10 @@
 stuff.txt
 rgb_test_data/
-scripts/preprocess/cloudmask.ipynb
 TIR+LS_test/
 .vscode/
+data/
+results/
+scripts/__pycache__/
+scripts/visualization/__pycache__/
+wandb/
+TIR_sisr/
