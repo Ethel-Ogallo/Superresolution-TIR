@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 RSYNC="rsync"
 
-SOURCE="/home/ogallo/Documents/CDE/MSC_thesis/Superresolution-TIR/TIR+LS_test/processed/patches"
+# Source folder (copy all contents, including hidden files)
+SOURCE="/home/ogallo/Documents/CDE/MSC_thesis/Superresolution-TIR/TIR+LS_test/processed/."
 
+# Destination
 DEST="e2406751@dmis:/share/home/e2406751/sisr/"
 
 while true; do
