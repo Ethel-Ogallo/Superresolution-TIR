@@ -1,84 +1,90 @@
-"""
-create_metadata.py — Scan HR/LR directories and create metadata CSV for TIR SR datasets.
-
-Features:
-- Scan HR/LR folders, check alignment
-- Save CSV with patch_id, hr_path, lr_path, split
-- Fully importable for multi-dataset workflows
-
-Usage (CLI):
-    python scripts/preprocess/create_metadata.py \
-    --hr_dir data/processed/sample_tir/HR \
-    --lr_dir data/processed/sample_tir/LR \
-    --output_csv data/metadata.csv
-"""
-
 import os
+import json
 import argparse
-import pandas as pd
-import rasterio
 
-
-def create_metadata(hr_dir: str, lr_dir: str, output_csv: str = "metadata.csv") -> pd.DataFrame:
+def create_metadata(
+    processed_dir: str,
+    hr_patch_dir: str,
+    lr_patch_dir: str,
+    output_path: str
+):
     """
-    Scan HR/LR directories and generate metadata CSV.
-
-    Args:
-        hr_dir (str): Path to HR images
-        lr_dir (str): Path to LR images
-        output_csv (str): Path to save CSV
-
-    Returns:
-        pd.DataFrame: Metadata table
+    Merge per-scene JSONs in `processed_dir` into one global JSON metadata,
+    adding absolute HR/LR patch paths.
     """
-    records = []
-    hr_files = sorted(f for f in os.listdir(hr_dir) if f.endswith((".tif", ".tiff")))
-    missing = mismatches = 0
+    all_metadata = []
 
-    for f in hr_files:
-        hr_path = os.path.abspath(os.path.join(hr_dir, f))
-        lr_path = os.path.abspath(os.path.join(lr_dir, f))
-
-        if not os.path.exists(lr_path):
-            print(f"  WARNING: missing LR file for {f}")
-            missing += 1
+    # Scan processed_dir for all JSON files
+    for fname in sorted(os.listdir(processed_dir)):
+        if not fname.endswith(".json"):
             continue
+        scene_path = os.path.join(processed_dir, fname)
+        with open(scene_path, "r") as f:
+            scene_meta = json.load(f)
 
-        # Check spatial alignment
-        with rasterio.open(hr_path) as h, rasterio.open(lr_path) as l:
-            if h.width != l.width * 4 or h.height != l.height * 4:
-                print(f"  WARNING: spatial mismatch — {f}")
-                mismatches += 1
+        for entry in scene_meta:
+            patch_id = entry["patch_name"]
+
+            # Absolute paths
+            hr_file = patch_id if patch_id.endswith(".tif") else patch_id + ".tif"
+            lr_file = patch_id if patch_id.endswith(".tif") else patch_id + ".tif"
+
+            hr_path = os.path.abspath(os.path.join(hr_patch_dir, hr_file))
+            lr_path = os.path.abspath(os.path.join(lr_patch_dir, lr_file))
+
+            # Skip missing files
+            if not os.path.exists(hr_path):
+                print(f"[WARN] Missing HR patch: {hr_path}")
+                continue
+            if not os.path.exists(lr_path):
+                print(f"[WARN] Missing LR patch: {lr_path}")
                 continue
 
-        records.append({
-            "patch_id": os.path.splitext(f)[0],
-            "hr_path": hr_path,
-            "lr_path": lr_path,
-            "split": None,
-        })
+            # Add patch_id and paths
+            entry["patch_id"] = patch_id
+            entry["hr_path"] = hr_path
+            entry["lr_path"] = lr_path
 
-    df = pd.DataFrame(records)
-    df.to_csv(output_csv, index=False)
-    print(f"Valid pairs : {len(df)}")
-    if missing: print(f"Missing LR  : {missing}")
-    if mismatches: print(f"Mismatches  : {mismatches}")
+            all_metadata.append(entry)
 
-    return df
+    # Save global metadata JSON
+    with open(output_path, "w") as f:
+        json.dump(all_metadata, f, indent=2)
+
+    print(f"\nMerged {len(all_metadata)} patches → {output_path}")
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Build metadata CSV with full paths for HR/LR image pairs.")
-    p.add_argument("--hr_dir", required=True, help="Directory with HR .tif files")
-    p.add_argument("--lr_dir", required=True, help="Directory with LR .tif files")
-    p.add_argument("--output_csv", default="metadata.csv", help="output to save the CSV")
-    return p.parse_args()
+    parser = argparse.ArgumentParser(
+        description="Build global patch metadata JSON for all scenes."
+    )
+    parser.add_argument("--processed_dir", required=True,
+                        help="Directory containing per-scene JSONs.")
+    parser.add_argument("--hr_patch_dir", required=True,
+                        help="Directory containing HR patches.")
+    parser.add_argument("--lr_patch_dir", required=True,
+                        help="Directory containing LR patches.")
+    parser.add_argument("--output_json", default="global_patch_metadata.json",
+                        help="Path to save the global metadata JSON.")
+    return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    create_metadata(args.hr_dir, args.lr_dir, args.output_csv)
+    create_metadata(
+        processed_dir=args.processed_dir,
+        hr_patch_dir=args.hr_patch_dir,
+        lr_patch_dir=args.lr_patch_dir,
+        output_path=args.output_json
+    )
 
 
 if __name__ == "__main__":
     main()
+
+# usage
+# python scripts/preprocess/create_metadata.py \
+#   --processed_dir data/processed \
+#   --hr_patch_dir data/processed/sample_tir/HR \
+#   --lr_patch_dir data/processed/sample_tir/LR \
+#   --output_json data/full_metadata.json
