@@ -8,7 +8,9 @@
 #SBATCH --time=02:00:00                      # Max runtime
 
 # -------- Environment --------
-export WANDB_API_KEY="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"   # W&B API key for non-interactive login
+export WANDB_API_KEY="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"   # W&B API key for non-interactive login
+export WANDB_DIR=/tmp
+
 source /share/common/anaconda/etc/profile.d/conda.sh
 conda activate sisr
 
@@ -19,7 +21,7 @@ mkdir -p results/logs/slurm
 # -------- Run training --------
 python -m scripts.training.train_edsr \
     --metadata_csv data/metadata.csv \
-    --pretrained   data/pretrained/edsr_baseline_x4.pth \
+    --pretrained   /share/home/e2406751/Superresolution-TIR/data/pretrained/EDSR_baseline_x4.pth \
     --n_feats      64 \
     --n_blocks     16 \
     --lr           1e-4 \
@@ -28,4 +30,5 @@ python -m scripts.training.train_edsr \
     --batch_size   1 \
     --num_workers  2 \
     --project      TIR_sisr \
-    --run_name     EDSR_slurm_test
+    --run_name     EDSR_slurm_test \
+    --group        tir-3chn-repeat 

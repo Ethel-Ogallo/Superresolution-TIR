@@ -93,7 +93,7 @@ class EDSRModule(pl.LightningModule):
 
     # ------------- Pretrained loading ----------------
     def _load_pretrained(self, path: str):
-        self.print(f"[INFO] Loading pretrained weights: {path}")
+        print(f"[INFO] Loading pretrained weights: {path}")
         ckpt       = torch.load(path, map_location="cpu", weights_only=True)
         state_dict = ckpt.get("params", ckpt)
 
@@ -121,7 +121,7 @@ class EDSRModule(pl.LightningModule):
             matched[model_key] = v
 
         self.body.load_state_dict(matched, strict=False)
-        self.print(f"[INFO] Matched {len(matched)} / {len(model_dict)} layers")
+        print(f"[INFO] Matched {len(matched)} / {len(model_dict)} layers")
 
     # ---------- Freeze logic -------------------
     def _set_backbone_frozen(self, frozen: bool):

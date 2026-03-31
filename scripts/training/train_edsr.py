@@ -11,6 +11,7 @@ Logs        → W&B only.
 import argparse
 import os
 import random
+import time
 
 import numpy as np
 import pandas as pd
@@ -48,12 +49,12 @@ def build_splits(metadata_csv: str):
         metadata.loc[val.index,   "split"] = "val"
         metadata.loc[test.index,  "split"] = "test"
         metadata.to_csv(metadata_csv, index=False)
-        print(f"Splits written back to {metadata_csv}")
+        print(f"[INFO] Splits written back to {metadata_csv}")
 
     train = metadata[metadata["split"] == "train"]
     val   = metadata[metadata["split"] == "val"]
     test  = metadata[metadata["split"] == "test"]
-    print(f"Split sizes — train: {len(train)}, val: {len(val)}, test: {len(test)}")
+    print(f"[INFO] Split sizes == train: {len(train)} | val: {len(val)} | test: {len(test)}")
     return train, val, test
 
 
@@ -63,6 +64,8 @@ def main():
     set_seed(args.seed)
 
     os.chdir(os.path.dirname(os.path.abspath(__file__)) + "/../..")
+    if args.pretrained and not os.path.exists(args.pretrained):
+        raise FileNotFoundError(f"Pretrained weights not found: {args.pretrained}")
 
     # Splits + stats (mean/std are scalars — dataset returns 1-channel tensors)
     train_df, val_df, test_df = build_splits(args.metadata_csv)
@@ -97,15 +100,21 @@ def main():
     wandb_logger = WandbLogger(
         project   = args.project,
         name      = run_name,
+        group     = args.group,
         log_model = "all",
         config    = vars(args),
     )
 
     callbacks = [
-        EarlyStopping(monitor="val_psnr", patience=args.patience, mode="max", verbose=True),
-        ModelCheckpoint(monitor="val_psnr", mode="max", save_top_k=1,
+        EarlyStopping(monitor="val_psnr", 
+                      patience=args.patience, 
+                      mode="max", 
+                      verbose=True),
+        ModelCheckpoint(monitor="val_psnr", 
+                        mode="max", 
+                        save_top_k=1,
                         filename=f"{run_name}-{{epoch:03d}}-{{val_psnr:.2f}}",
-                        dirpath=None),
+                        dirpath="/tmp/checkpoints"),
         LearningRateMonitor(logging_interval="epoch"),
     ]
 
@@ -120,15 +129,17 @@ def main():
         log_every_n_steps = 1,
     )
 
-    print(f"Starting run: {run_name}")
+    print(f"[INFO] Starting run: {run_name}")
+    start_time = time.time()
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
 
     if args.run_test:
-        print("Evaluating on test set …")
+        print("[INFO] Evaluating on test set …")
         trainer.test(model, dataloaders=test_loader, ckpt_path="best")
 
     wandb.finish()
-    print("Done.")
+    end_time = time.time()
+    print(f" [INFO] Training completed in {(end_time - start_time) / 60:.2f} minutes.")
 
 
 # -------------- CLI -----------------------------
@@ -150,6 +161,7 @@ def parse_args():
     p.add_argument("--run_test",      action="store_true")
     p.add_argument("--project",       default="TIR_sisr")
     p.add_argument("--run_name",      default=None)
+    p.add_argument("--group",         default="EDSR")
 
     return p.parse_args()
 
