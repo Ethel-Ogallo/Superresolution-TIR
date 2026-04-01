@@ -12,6 +12,7 @@ import argparse
 import os
 import random
 import time
+import json
 
 import numpy as np
 import pandas as pd
@@ -38,9 +39,12 @@ def set_seed(seed: int = 42):
 
 
 # ------------- Splits -----------------------------
-def build_splits(metadata_csv: str):
-    metadata = pd.read_csv(metadata_csv)
+def build_splits(metadata_json: str):
+    # Load JSON
+    with open(metadata_json, "r") as f:
+        metadata = pd.DataFrame(json.load(f))
 
+    # If 'split' column missing or empty, create splits
     if "split" not in metadata.columns or metadata["split"].isna().all():
         train_val, test = train_test_split(metadata, test_size=0.15, random_state=42)
         train, val      = train_test_split(train_val, test_size=0.15/0.85, random_state=42)
@@ -48,8 +52,10 @@ def build_splits(metadata_csv: str):
         metadata.loc[train.index, "split"] = "train"
         metadata.loc[val.index,   "split"] = "val"
         metadata.loc[test.index,  "split"] = "test"
-        metadata.to_csv(metadata_csv, index=False)
-        print(f"[INFO] Splits written back to {metadata_csv}")
+
+        # Optional: write back to JSON
+        metadata.to_json(metadata_json, orient="records", indent=2)
+        print(f"[INFO] Splits written back to {metadata_json}")
 
     train = metadata[metadata["split"] == "train"]
     val   = metadata[metadata["split"] == "val"]
@@ -65,10 +71,10 @@ def main():
 
     os.chdir(os.path.dirname(os.path.abspath(__file__)) + "/../..")
     if args.pretrained and not os.path.exists(args.pretrained):
-        raise FileNotFoundError(f"Pretrained weights not found: {args.pretrained}")
+        raise FileNotFoundError(f"[WARN]Pretrained weights not found: {args.pretrained}")
 
     # Splits + stats (mean/std are scalars — dataset returns 1-channel tensors)
-    train_df, val_df, test_df = build_splits(args.metadata_csv)
+    train_df, val_df, test_df = build_splits(args.metadata_json)
     mean, std = compute_mean_std(train_df)
 
     # Datasets
@@ -137,16 +143,18 @@ def main():
         print("[INFO] Evaluating on test set …")
         trainer.test(model, dataloaders=test_loader, ckpt_path="best")
 
-    wandb.finish()
     end_time = time.time()
-    print(f" [INFO] Training completed in {(end_time - start_time) / 60:.2f} minutes.")
+    print(f"[INFO] Training completed in {(end_time - start_time) / 60:.2f} minutes.")
+
+    wandb.finish()
+    
 
 
 # -------------- CLI -----------------------------
 def parse_args():
     p = argparse.ArgumentParser(description="Train EDSR for TIR super-resolution")
 
-    p.add_argument("--metadata_csv",  default="metadata.csv")
+    p.add_argument("--metadata_json",  default="metadata.json")
     p.add_argument("--pretrained",    default=None)
     p.add_argument("--n_feats",       type=int,   default=64)
     p.add_argument("--n_blocks",      type=int,   default=16)

@@ -1,8 +1,7 @@
 #!/bin/bash -l
 #SBATCH --job-name=sisr_edsr_eval_test
-#SBATCH --error=results/logs/slurm/eval_edsr_%j.err
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=2
+#SBATCH --cpus-per-gpu=4
 #SBATCH --mem=8G
 #SBATCH --time=01:00:00
 
@@ -15,14 +14,14 @@ conda activate sisr
 
 # Project root 
 cd /share/castor/home/e2406751/Superresolution-TIR
-mkdir -p results/logs/slurm
+# mkdir -p results/logs/slurm
 
 # Run evaluation 
 # Checkpoint: wandb.ai → TIR_sisr → your run → Artifacts tab → copy path
 # Format: ogalloethel-university-of-south-brittany/TIR_sisr/model-<run_id>:best
 python -m scripts.evaluation.evaluate \
-    --checkpoint   "wandb:ogalloethel-university-of-south-brittany/TIR_sisr/model-fgnxkh6i:best" \
-    --metadata_csv data/metadata.csv \
+    --checkpoint   "wandb:ogalloethel-university-of-south-brittany/TIR_sisr/model-ejg57dm5:best" \
+    --metadata_json data/full_metadata.json \
     --split        test \
     --num_workers  2 \
     --project      TIR_sisr \
