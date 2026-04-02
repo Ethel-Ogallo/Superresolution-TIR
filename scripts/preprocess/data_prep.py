@@ -106,7 +106,7 @@ def reproject_to_hr(src_path, hr_path, out_path, resampling):
                 )
 
 def downsample_hr(hr_path, out_path):
-    """Downsample HR raster → GT resolution."""
+    """Downsample HR raster to GT resolution."""
     gt_res = 30 / SCALE_FACTOR
     with rasterio.open(hr_path) as src:
         transform = from_origin(src.transform.c, src.transform.f, gt_res, gt_res)
@@ -166,7 +166,7 @@ def pad_patch(arr, target_size=HR_PATCH_SIZE):
     return padded
 
 # ---------------- PROCESS SCENE ----------------
-def process_scene(hr_path, ls_tar, out_dir, patch_dir):
+def process_scene(hr_path, ls_tar, out_dir, patch_dir, metadata_dir):
     try:
         hr_id = get_hr_name(hr_path)
         print(f"\nProcessing: {hr_id}")
@@ -194,6 +194,17 @@ def process_scene(hr_path, ls_tar, out_dir, patch_dir):
         reproject_to_hr(l8_clip, hr_path, l8_align, Resampling.bilinear)
         reproject_to_hr(qa_clip, hr_path, qa_align, Resampling.nearest)
         downsample_hr(hr_path, hr_gt)
+
+        # --- NEW: Save full HR in dedicated folder ---
+        full_hr_dir = os.path.join(out_dir, "HR_downsampled")
+        os.makedirs(full_hr_dir, exist_ok=True)
+        scene_id = get_hr_name(hr_path)
+        full_hr_path = os.path.join(full_hr_dir, f"{scene_id}.tif")
+        if not os.path.exists(full_hr_path):
+            shutil.copy(hr_gt, full_hr_path)
+            print(f" Saved full HR: {full_hr_path}")
+        else:
+            print(f" Full HR already exists, skipping: {scene_id}")
 
         # Load arrays
         with rasterio.open(l8_align) as lr_src, \
@@ -278,7 +289,7 @@ def process_scene(hr_path, ls_tar, out_dir, patch_dir):
             saved += 1
 
         # Save metadata
-        meta_path = os.path.join(out_dir, f"metadata_{hr_id}.json")
+        meta_path = os.path.join(metadata_dir, f"metadata_{hr_id}.json")
         with open(meta_path, "w") as f:
             json.dump(metadata, f, indent=2)
 
@@ -302,11 +313,14 @@ def main():
     patch_dir = os.path.join(args.out_dir, "sample_tir")
     os.makedirs(patch_dir, exist_ok=True)
 
+    metadata_dir = os.path.join(args.out_dir, "metadata")
+    os.makedirs(metadata_dir, exist_ok=True)
+
     hr_files = glob.glob(os.path.join(args.hr_folder, "*.tif"))
     ls_tars = glob.glob(os.path.join(args.ls_folder, "*.tar"))
 
     with ProcessPoolExecutor(max_workers=args.workers) as ex:
-        futures = [ex.submit(process_scene, hr, ls, args.out_dir, patch_dir)
+        futures = [ex.submit(process_scene, hr, ls, args.out_dir, patch_dir, metadata_dir)
                    for hr in hr_files for ls in ls_tars]
         for f in futures:
             f.result()
@@ -322,3 +336,4 @@ if __name__ == "__main__":
 #     --ls-folder /home/ogallo/Documents/CDE/MSC_thesis/Superresolution-TIR/TIR+LS_test/LR \
 #     --out-dir /home/ogallo/Documents/CDE/MSC_thesis/Superresolution-TIR/TIR+LS_test/processed \
 #     --workers 4
+

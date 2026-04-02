@@ -15,15 +15,17 @@ def create_metadata(
     all_metadata = []
 
     # Scan processed_dir for all JSON files
-    for fname in sorted(os.listdir(processed_dir)):
+    metadata_dir = os.path.join(processed_dir, "metadata")
+
+    for fname in sorted(os.listdir(metadata_dir)):
         if not fname.endswith(".json"):
             continue
-        scene_path = os.path.join(processed_dir, fname)
+        scene_path = os.path.join(metadata_dir, fname)
         with open(scene_path, "r") as f:
             scene_meta = json.load(f)
 
         for entry in scene_meta:
-            patch_id = entry["patch_name"]
+            patch_id = entry.get("patch_id", entry["patch_name"])
 
             # Absolute paths
             hr_file = patch_id if patch_id.endswith(".tif") else patch_id + ".tif"
