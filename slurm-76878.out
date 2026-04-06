@@ -1,8 +1,0 @@
-[INFO] Evaluating 4 patches from 'test' split
-[INFO] Downloaded checkpoint → /tmp/ckpt/model.ckpt
-[INFO] Loading pretrained weights: /share/home/e2406751/Superresolution-TIR/data/pretrained/EDSR_baseline_x4.pth
-[INFO] Matched 68 / 74 layers
-[INFO] Loaded EDSRModule (fallback)
-
-[PATCH METRICS] PSNR: 27.80 ± 1.02, SSIM: 0.782 ± 0.042
-[INFO] Completed evaluation. Metrics logged to W&B run 'EDSR_eval_test'

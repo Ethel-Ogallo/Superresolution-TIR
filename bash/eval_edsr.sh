@@ -2,8 +2,7 @@
 #SBATCH --job-name=sisr_edsr_eval_test
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-gpu=4
-#SBATCH --mem=8G
-#SBATCH --time=01:00:00
+#SBATCH --mem=16G
 
 # Environment 
 export WANDB_API_KEY="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"
@@ -20,10 +19,12 @@ cd /share/castor/home/e2406751/Superresolution-TIR
 # Checkpoint: wandb.ai → TIR_sisr → your run → Artifacts tab → copy path
 # Format: ogalloethel-university-of-south-brittany/TIR_sisr/model-<run_id>:best
 python -m scripts.evaluation.evaluate \
-    --checkpoint   "wandb:ogalloethel-university-of-south-brittany/TIR_sisr/model-ejg57dm5:best" \
+    --checkpoint   "wandb:ogalloethel-university-of-south-brittany/TIR_sisr/model-s1dxac6f:best" \
     --metadata_json data/full_metadata.json \
     --split        test \
+    --hr_full_dir  data/processed/HR_downsampled/ \
+    --output_dir   results/SR_images/ \
     --num_workers  2 \
     --project      TIR_sisr \
-    --run_name     EDSR_eval_test \
-    --group        tir-3chn-repeat
+    --run_name     eval_frozen_v2 \
+    --group        3c-repeat+data-aug

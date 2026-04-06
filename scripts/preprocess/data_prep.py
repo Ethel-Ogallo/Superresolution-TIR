@@ -240,14 +240,24 @@ def process_scene(hr_path, ls_tar, out_dir, patch_dir, metadata_dir):
                 skipped += 1
                 continue
 
-            hr_x = hr_t.c + hr_col * hr_t.a
-            hr_y = hr_t.f + hr_row * hr_t.e
-            lr_col = int(round((hr_x - lr_t.c) / lr_t.a))
-            lr_row = int(round((hr_y - lr_t.f) / lr_t.e))
-            lr_patch = lr[lr_row:lr_row+LR_PATCH_SIZE,
-                          lr_col:lr_col+LR_PATCH_SIZE]
-            qa_patch = qa[lr_row:lr_row+LR_PATCH_SIZE,
-                          lr_col:lr_col+LR_PATCH_SIZE]
+            # >>> FIXED: use HR bounds to extract perfectly aligned LR patch
+            x_min = hr_t.c + hr_col * hr_t.a
+            y_max = hr_t.f + hr_row * hr_t.e
+            x_max = x_min + HR_PATCH_SIZE * hr_t.a
+            y_min = y_max + HR_PATCH_SIZE * hr_t.e
+
+            # Get LR window aligned to HR patch
+            lr_window = rasterio.windows.from_bounds(x_min, y_min, x_max, y_max, transform=lr_t)
+            lr_window = lr_window.round_offsets().round_lengths()  # ensure integer indices
+
+            lr_row, lr_col = int(lr_window.row_off), int(lr_window.col_off)
+            lr_patch = lr[lr_row:lr_row+LR_PATCH_SIZE, lr_col:lr_col+LR_PATCH_SIZE]
+            qa_patch = qa[lr_row:lr_row+LR_PATCH_SIZE, lr_col:lr_col+LR_PATCH_SIZE]
+
+            # Skip patch if LR size is wrong
+            if lr_patch.shape != (LR_PATCH_SIZE, LR_PATCH_SIZE):
+                skipped += 1
+                continue
 
             cloud = extract_bit(qa_patch, BIT_CLOUD) | extract_bit(qa_patch, BIT_CLOUD_SHADOW)
             if cloud.mean() > MAX_CLOUD_FRAC:
@@ -259,11 +269,9 @@ def process_scene(hr_path, ls_tar, out_dir, patch_dir, metadata_dir):
             hr_patch_transform = from_origin(hr_t.c + hr_col*hr_t.a,
                                             hr_t.f + hr_row*hr_t.e,
                                             abs(hr_t.a), abs(hr_t.e))
-            lr_patch_transform = from_origin(lr_t.c + lr_col*lr_t.a,
-                                            lr_t.f + lr_row*lr_t.e,
-                                            abs(lr_t.a), abs(lr_t.e))
+            lr_patch_transform = lr_src.window_transform(lr_window)
 
-            name = f"{hr_id}_{patch_num:04d}.tif"
+            name = f"{hr_id}_{patch_num}.tif"
 
             # Save patches
             for arr, path, transform, size in [

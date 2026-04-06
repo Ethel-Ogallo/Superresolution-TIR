@@ -53,7 +53,7 @@ def create_metadata(
     with open(output_path, "w") as f:
         json.dump(all_metadata, f, indent=2)
 
-    print(f"\nMerged {len(all_metadata)} patches → {output_path}")
+    print(f"\n[INFO] Merged {len(all_metadata)} patches → {output_path}")
 
 
 def parse_args():

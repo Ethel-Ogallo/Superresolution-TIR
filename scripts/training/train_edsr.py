@@ -25,7 +25,7 @@ from lightning.pytorch import Trainer
 from lightning.pytorch.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
 
-from scripts.utils.dataset import SRDataset, compute_mean_std
+from scripts.utils.dataset import SRDataset, compute_mean_std, Compose, GeoAugment, TIRNoise, BlurAugment, ContrastScaling, ThermalShift
 from scripts.models.edsr import EDSRModule
 
 
@@ -78,9 +78,17 @@ def main():
     mean, std = compute_mean_std(train_df)
 
     # Datasets
-    train_ds = SRDataset(train_df, mean=mean, std=std)
-    val_ds   = SRDataset(val_df,   mean=mean, std=std)
-    test_ds  = SRDataset(test_df,  mean=mean, std=std)
+    train_aug = Compose([
+        GeoAugment(),
+        ThermalShift(range_c=2.0, sensor_bias_range=0.5),
+        ContrastScaling(range_alpha=(0.90, 1.10)),
+        TIRNoise(std=std, p=0.5),
+        BlurAugment(sigma_range=(0.5, 1.5)),
+    ])
+
+    train_ds = SRDataset(train_df, mean=mean, std=std, transforms=train_aug)
+    val_ds   = SRDataset(val_df,   mean=mean, std=std, transforms=None)
+    test_ds  = SRDataset(test_df,  mean=mean, std=std, transforms=None)
 
     loader_kw = dict(num_workers=args.num_workers, pin_memory=True)
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,  **loader_kw)
@@ -98,6 +106,7 @@ def main():
         n_feats           = args.n_feats,
         n_blocks          = args.n_blocks,
         freeze_backbone   = not args.unfreeze,
+        lambda_grad       = args.lambda_grad,
     )
 
     frozen_tag = "finetune" if args.unfreeze else "frozen"
@@ -107,7 +116,7 @@ def main():
         project   = args.project,
         name      = run_name,
         group     = args.group,
-        log_model = "all",
+        log_model = "all",  # Save only the best checkpoint as a W&B artifact
         config    = vars(args),
     )
 
@@ -159,6 +168,7 @@ def parse_args():
     p.add_argument("--n_feats",       type=int,   default=64)
     p.add_argument("--n_blocks",      type=int,   default=16)
     p.add_argument("--unfreeze",      action="store_true")
+    p.add_argument("--lambda_grad",   type=float, default=0.1, help="Weight for gradient loss (0 = disabled)")
     p.add_argument("--lr",            type=float, default=1e-4)
     p.add_argument("--bb_lr_scale",   type=float, default=0.1)
     p.add_argument("--max_epochs",    type=int,   default=20)

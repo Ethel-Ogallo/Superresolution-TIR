@@ -1,37 +1,25 @@
 """
 dataset.py — TIR Super-Resolution dataset and data utilities.
-
-Provides:
-  - compute_mean_std : train-only pixel statistics (no data leakage)
-  - SRDataset        : returns (lr_t, hr_t, hr_mask) each (1, H, W)
-
-Channel repetition (1→3) is handled by each model's forward().
-The dataset stays model-agnostic.
 """
 
+import random
 import numpy as np
 import pandas as pd
 import rasterio
 import torch
 from torch.utils.data import Dataset
+from scipy.ndimage import gaussian_filter
 
-
+# -------------- Data stats ---------------
 def compute_mean_std(metadata: pd.DataFrame) -> tuple[float, float]:
-    """
-    Compute mean and std over all valid LR pixels.
-    Call on the training split only to avoid data leakage.
-    Reads nodata value directly from the raster metadata.
-    """
     pixel_sum = pixel_sq = pixel_count = 0.0
-
     for _, row in metadata.iterrows():
         with rasterio.open(row["lr_path"]) as src:
             nodata = src.nodata
             lr     = src.read(1).astype(np.float32)
 
         valid = lr[lr != nodata] if nodata is not None else lr[~np.isnan(lr)]
-        if len(valid) == 0:
-            continue
+        if len(valid) == 0: continue
 
         pixel_sum   += valid.sum()
         pixel_sq    += (valid ** 2).sum()
@@ -42,31 +30,116 @@ def compute_mean_std(metadata: pd.DataFrame) -> tuple[float, float]:
     print(f"  Train mean : {mean:.4f} °C  |  std : {std:.4f} °C")
     return float(mean), float(std)
 
+# ------------ Data Augmentations ----------------
+class GeoAugment:
+    """Geometric transforms: flips + 90° rotations."""
 
+    def __call__(self, lr, hr, mask):
+        if random.random() > 0.5:
+            lr = np.fliplr(lr).copy()
+            hr = np.fliplr(hr).copy()
+            mask = np.fliplr(mask).copy()
+        if random.random() > 0.5:
+            lr = np.flipud(lr).copy()
+            hr = np.flipud(hr).copy()
+            mask = np.flipud(mask).copy()
+        k = random.randint(0, 3)
+        if k > 0:
+            lr = np.rot90(lr, k).copy()
+            hr = np.rot90(hr, k).copy()
+            mask = np.rot90(mask, k).copy()
+        return lr, hr, mask
+
+
+class TIRNoise:
+    """
+    Adds calibrated noise to LR only.
+    std should be estimated from actual LR (Landsat-8) patches.
+    """
+
+    def __init__(self, std, p=0.5):
+        self.std = std
+        self.p = p
+
+    def __call__(self, lr, hr, mask):
+        if random.random() < self.p:
+            multiplier = random.uniform(0.5, 1.5)
+            noise = np.random.randn(*lr.shape).astype(np.float32) * (self.std * multiplier)
+            lr = lr + noise
+        return lr, hr, mask
+
+
+class ThermalShift:
+    """
+    Global diurnal shift applied to both (physically consistent).
+    Optional inter-sensor bias applied to LR only.
+    """
+
+    def __init__(self, range_c=2.0, sensor_bias_range=0.5):
+        self.range_c = range_c
+        self.sensor_bias = sensor_bias_range
+
+    def __call__(self, lr, hr, mask):
+        shift = random.uniform(-self.range_c, self.range_c)
+        bias = random.uniform(-self.sensor_bias, self.sensor_bias)
+        return lr + shift + bias, hr + shift, mask
+
+
+class ContrastScaling:
+    """
+    Scales thermal gradients around each image's own mean.
+    """
+
+    def __init__(self, range_alpha=(0.90, 1.10)):
+        self.range_alpha = range_alpha
+
+    def __call__(self, lr, hr, mask):
+        if random.random() > 0.5:
+            alpha = random.uniform(*self.range_alpha)
+            lr_m = lr.mean()
+            hr_m = hr.mean()
+            lr = (lr - lr_m) * alpha + lr_m
+            hr = (hr - hr_m) * alpha + hr_m
+        return lr, hr, mask
+
+
+class BlurAugment:
+    """
+    Blurs LR only to simulate sensor PSF variability.
+    Handles both (H, W) and (1, H, W) shapes.
+    """
+
+    def __init__(self, sigma_range=(0.5, 1.5)):
+        self.sigma_range = sigma_range
+
+    def __call__(self, lr, hr, mask):
+        if random.random() > 0.5:
+            sig = random.uniform(*self.sigma_range)
+            if lr.ndim == 3:
+                lr = gaussian_filter(lr, sigma=(0, sig, sig))
+            else:
+                lr = gaussian_filter(lr, sigma=sig)
+        return lr, hr, mask
+
+
+class Compose:
+    def __init__(self, transforms):
+        self.transforms = transforms
+
+    def __call__(self, lr, hr, mask):
+        for t in self.transforms:
+            lr, hr, mask = t(lr, hr, mask)
+        return lr, hr, mask
+
+# ------------- Dataset -----------------------------
 class SRDataset(Dataset):
-    """
-    Single-channel TIR super-resolution dataset.
+    def __init__(self, metadata: pd.DataFrame, mean: float = None, std: float = None, transforms = None):
+        self.samples    = metadata.reset_index(drop=True)
+        self.mean       = mean
+        self.std        = std
+        self.transform  = transforms
 
-    Returns:
-        lr_t   (1, H, W)   — normalised LR patch
-        hr_t   (1, H*4, W*4) — normalised HR patch
-        mask_t (1, H*4, W*4) — 1 = valid pixel, 0 = nodata
-
-    Notes:
-        - nodata value is read from the raster, not hardcoded
-        - nodata pixels filled with mean before normalisation
-        - mask is never normalised
-        - channel repetition (1→3) is done inside each model's forward()
-    """
-
-    def __init__(self, metadata: pd.DataFrame,
-                 mean: float = None, std: float = None):
-        self.samples = metadata.reset_index(drop=True)
-        self.mean    = mean
-        self.std     = std
-
-    def __len__(self):
-        return len(self.samples)
+    def __len__(self): return len(self.samples)
 
     def __getitem__(self, idx):
         row = self.samples.iloc[idx]
@@ -80,30 +153,25 @@ class SRDataset(Dataset):
             hr        = src.read(1).astype(np.float32)
 
         # Build mask BEFORE filling nodata
-        if nodata_hr is not None:
-            hr_mask = (hr != nodata_hr).astype(np.float32)
-        else:
-            hr_mask = (~np.isnan(hr)).astype(np.float32)
+        hr_mask = (hr != nodata_hr).astype(np.float32) if nodata_hr is not None else (~np.isnan(hr)).astype(np.float32)
 
-        # Fill nodata with a scalar (mean or 0)
+        # EDIT: Filling LR with mean instead of 0.0 for better radiometric consistency
         fill = float(self.mean) if self.mean is not None else 0.0
 
-        if nodata_hr is not None:
-            hr[hr == nodata_hr] = fill
-        else:
-            hr[np.isnan(hr)] = fill
+        hr = np.nan_to_num(hr, nan=fill) if nodata_hr is None else np.where(hr == nodata_hr, fill, hr)
+        lr = np.nan_to_num(lr, nan=fill) if nodata_lr is None else np.where(lr == nodata_lr, fill, lr)
 
-        if nodata_lr is not None:
-            lr[lr == nodata_lr] = 0.0
-        else:
-            lr[np.isnan(lr)] = 0.0
+        # Apply augmentations (Applied to raw Celsius values)
+        if self.transform is not None:
+            lr, hr, hr_mask = self.transform(lr, hr, hr_mask)
 
-        # (H, W) → (1, H, W)
+        # Ensure contiguous for PyTorch
+        lr, hr, hr_mask = np.ascontiguousarray(lr), np.ascontiguousarray(hr), np.ascontiguousarray(hr_mask)
+
         lr_t   = torch.from_numpy(lr).unsqueeze(0).float()
         hr_t   = torch.from_numpy(hr).unsqueeze(0).float()
         mask_t = torch.from_numpy(hr_mask).unsqueeze(0).float()
 
-        # Normalise inputs only — mask stays as 0/1
         if self.mean is not None and self.std is not None:
             lr_t = (lr_t - self.mean) / self.std
             hr_t = (hr_t - self.mean) / self.std
