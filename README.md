@@ -4,8 +4,8 @@
 ```
 Superresolution-TIR/
 │
-├── data/metadata.csv                         
-├── data/models.csv                            
+├── data/
+│   ├── metadata.json                               
 ├── requirements.txt
 ├── README.md
 │
@@ -13,7 +13,6 @@ Superresolution-TIR/
 │   ├── utils/
 │   │   ├── __init__.py
 │   │   ├── dataset.py
-│   │   └── visualize.py
 │   │
 │   ├── models/
 │   │   ├── __init__.py
@@ -21,7 +20,8 @@ Superresolution-TIR/
 │   │
 │   ├── preprocessing/
 │   │   ├── __init__.py
-│   │   └── build_metadata.py
+│   │   └── create_metadata.py
+│   │   └── data_prep.py
 │   │
 │   ├── training/
 │   │   ├── __init__.py
@@ -30,10 +30,9 @@ Superresolution-TIR/
 │   └── evaluation/
 │       ├── __init__.py
 │       ├── evaluate.py
-│       └── compare_models.py
 │
 └── jobs/
-    ├── train_edsr.slurm
-    ├── eval_edsr.slurm
-    └── eval_all.slurm
+    ├── train_edsr.sh
+    ├── eval_edsr.sh
+    └── eval_all.sh
 ```
