@@ -1,0 +1,10 @@
+model_class: HATModule
+img_size: 64
+window_size: 16
+embed_dim: 180
+depths: [6, 6, 6, 6, 6, 6]
+num_heads: [6, 6, 6, 6, 6, 6]
+mlp_ratio: 2.0
+compress_ratio: 3
+squeeze_factor: 30
+overlap_ratio: 0.5

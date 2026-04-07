@@ -107,23 +107,27 @@ def evaluate_patches(model, ds: SRDataset, device: torch.device) -> list[dict]:
 @torch.no_grad()
 def evaluate_scenes(
     model,
-    metadata:     pd.DataFrame,
-    hr_full_dir:  str,
-    output_dir:   str,
+    metadata:      pd.DataFrame,
+    output_dir:    str,
     hr_patch_size: int,
-    device:       torch.device,
+    device:        torch.device,
 ) -> list[dict]:
     """
     For each hr_image_id in metadata:
       1. Run inference on all its patches
-      2. Place SR outputs at (hr_row, hr_col) in a canvas matching the full HR image
-      3. Average overlapping regions
-      4. Compute global MAE vs full HR GeoTIFF
-      5. Save SR GeoTIFF to output_dir
+      2. Reassemble SR canvas and HR canvas identically
+         (same patch footprints, same overlap averaging)
+      3. Compute global MAE / PSNR / SSIM on the reassembled pair
+      4. Save SR GeoTIFF to output_dir
 
-    Returns list of per-scene metric dicts.
+    No full-scene HR GeoTIFF is needed — the reference is built
+    from the same patches as the prediction, making the comparison
+    perfectly symmetric.
     """
     psnr_fn = PeakSignalNoiseRatio(data_range=model.DATA_RANGE).to(device)
+    ssim_fn = StructuralSimilarityIndexMeasure(
+        data_range=model.DATA_RANGE, kernel_size=11
+    ).to(device)
     os.makedirs(output_dir, exist_ok=True)
     scene_records = []
 
@@ -131,23 +135,28 @@ def evaluate_scenes(
         scene_patches = scene_patches.reset_index(drop=True)
         print(f"\n[INFO] Scene: {scene_id}  ({len(scene_patches)} patches)")
 
-        # Find full HR image 
-        hr_full_path = os.path.join(hr_full_dir, f"{scene_id}.tif")
-        if not os.path.exists(hr_full_path):
-            print(f"  [WARN] Full HR not found at {hr_full_path} — skipping scene")
-            continue
+        # Canvas dimensions from metadata transform + patch positions
+        # We don't need the full HR GeoTIFF anymore — derive canvas size
+        # from the maximum patch extent recorded in metadata
+        max_row = int(scene_patches["hr_row"].max()) + hr_patch_size
+        max_col = int(scene_patches["hr_col"].max()) + hr_patch_size
 
-        with rasterio.open(hr_full_path) as src:
-            full_h, full_w = src.height, src.width
-            transform      = src.transform
-            crs            = src.crs
-            hr_nodata      = src.nodata if src.nodata is not None else -9999.0
-            hr_full_arr    = src.read(1).astype(np.float32)
+        # Read CRS/transform from the first patch file for GeoTIFF output
+        first_hr_path = scene_patches.iloc[0]["hr_path"]
+        with rasterio.open(first_hr_path) as src:
+            crs       = src.crs
+            # Reconstruct canvas-level transform from patch metadata
+            # hr_transform is stored per-patch; use the one with min row/col
+            top_patch = scene_patches.loc[
+                scene_patches["hr_row"].idxmin()
+            ]
+            t = top_patch["hr_transform"]  # [res, 0, xmin, 0, -res, ymax]
+            canvas_transform = Affine(t[0], t[1], t[2], t[3], t[4], t[5])
 
-        sr_canvas    = np.full((full_h, full_w), np.nan, dtype=np.float32)
-        count_canvas = np.zeros((full_h, full_w), dtype=np.float32)
+        sr_canvas    = np.full((max_row, max_col), np.nan, dtype=np.float32)
+        hr_canvas    = np.full((max_row, max_col), np.nan, dtype=np.float32)
+        count_canvas = np.zeros((max_row, max_col),        dtype=np.float32)
 
-        # Dataset for this scene's patches only
         ds = SRDataset(scene_patches,
                        mean=model.hparams.mean,
                        std=model.hparams.std)
@@ -157,96 +166,123 @@ def evaluate_scenes(
             hr_row   = int(row_meta["hr_row"])
             hr_col   = int(row_meta["hr_col"])
 
-            lr_t, _, _ = ds[i]
+            lr_t, hr_t, _ = ds[i]
             sr_t  = model(lr_t.unsqueeze(0).to(device))
             sr_np = model.denormalize(sr_t).squeeze().cpu().numpy()
+            hr_np = model.denormalize(hr_t.unsqueeze(0)).squeeze().cpu().numpy()
 
-            r0 = hr_row
-            r1 = min(hr_row + hr_patch_size, full_h)
-            c0 = hr_col
-            c1 = min(hr_col + hr_patch_size, full_w)
+            r0, r1 = hr_row, min(hr_row + hr_patch_size, max_row)
+            c0, c1 = hr_col, min(hr_col + hr_patch_size, max_col)
             pr, pc = r1 - r0, c1 - c0
 
-            # Running average (handles 50% overlap stride)
-            prev = sr_canvas[r0:r1, c0:c1]
             cnt  = count_canvas[r0:r1, c0:c1]
+
+            # SR canvas
+            prev_sr = sr_canvas[r0:r1, c0:c1]
             sr_canvas[r0:r1, c0:c1] = np.where(
-                np.isnan(prev),
+                np.isnan(prev_sr),
                 sr_np[:pr, :pc],
-                (prev * cnt + sr_np[:pr, :pc]) / (cnt + 1),
+                (prev_sr * cnt + sr_np[:pr, :pc]) / (cnt + 1),
             )
+
+            # HR canvas — identical logic, symmetric by construction
+            prev_hr = hr_canvas[r0:r1, c0:c1]
+            hr_canvas[r0:r1, c0:c1] = np.where(
+                np.isnan(prev_hr),
+                hr_np[:pr, :pc],
+                (prev_hr * cnt + hr_np[:pr, :pc]) / (cnt + 1),
+            )
+
             count_canvas[r0:r1, c0:c1] += 1
 
-        # Fill unvisited pixels with nodata
-        sr_canvas[np.isnan(sr_canvas)] = hr_nodata
-
-        # Save SR GeoTIFF 
-        out_tif = os.path.join(output_dir, f"SR_{scene_id}.tif")
-        with rasterio.open(
-            out_tif, "w",
-            driver="GTiff", height=full_h, width=full_w,
-            count=1, dtype=np.float32,
-            crs=crs, transform=transform, nodata=hr_nodata,
-        ) as dst:
-            dst.write(sr_canvas, 1)
-        print(f"  [INFO] Saved → {out_tif}")
-
-        # Global MAE 
-        gt_nodata = hr_nodata
-        valid = (sr_canvas != hr_nodata)
-        if gt_nodata is not None:
-            valid &= (hr_full_arr != gt_nodata)
-        else:
-            valid &= ~np.isnan(hr_full_arr)
+        # Valid mask: pixels covered by at least one patch in both canvases
+        # By construction these are always identical, but be explicit
+        valid = ~np.isnan(sr_canvas) & ~np.isnan(hr_canvas)
 
         if valid.sum() == 0:
-            print(f"  [WARN] No valid pixels for scene {scene_id}")
+            print(f"  [WARN] No valid pixels for scene {scene_id} — skipping")
             continue
 
-        global_mae = float(np.abs(sr_canvas[valid] - hr_full_arr[valid]).mean())
+        # Save SR GeoTIFF (trimmed to actual coverage)
+        out_tif = os.path.join(output_dir, f"SR_{scene_id}.tif")
+        sr_out  = sr_canvas.copy()
+        sr_out[~valid] = -9999.0
+        with rasterio.open(
+            out_tif, "w",
+            driver="GTiff", height=max_row, width=max_col,
+            count=1, dtype=np.float32,
+            crs=crs, transform=canvas_transform, nodata=-9999.0,
+        ) as dst:
+            dst.write(sr_out, 1)
 
-        #  Scene PSNR / SSIM on valid region 
-        # Extract only valid pixels as 1D then reshape to minimal 2D patch
-        # to avoid SSIM NaN from nodata-filled windows in the full scene canvas
-        sr_valid_px = sr_canvas[valid].astype(np.float32)
-        hr_valid_px = hr_full_arr[valid].astype(np.float32)
+        # Also save reassembled HR for side-by-side visual comparison
+        hr_out_tif = os.path.join(output_dir, f"HR_reassembled_{scene_id}.tif")
+        hr_out     = hr_canvas.copy()
+        hr_out[~valid] = -9999.0
+        with rasterio.open(
+            hr_out_tif, "w",
+            driver="GTiff", height=max_row, width=max_col,
+            count=1, dtype=np.float32,
+            crs=crs, transform=canvas_transform, nodata=-9999.0,
+        ) as dst:
+            dst.write(hr_out, 1)
 
-        # PSNR on valid pixels directly
-        sr_1d = torch.tensor(sr_valid_px, device=device).unsqueeze(0).unsqueeze(0)
-        hr_1d = torch.tensor(hr_valid_px, device=device).unsqueeze(0).unsqueeze(0)
+        print(f"  [INFO] Saved SR  → {out_tif}")
+        print(f"  [INFO] Saved HR  → {hr_out_tif}")
+
+        # ── Global metrics on reassembled pair ──────────────────────────────
+        sr_valid = sr_canvas[valid].astype(np.float32)
+        hr_valid = hr_canvas[valid].astype(np.float32)
+
+        global_mae  = float(np.abs(sr_valid - hr_valid).mean())
+        global_rmse = float(np.sqrt(((sr_valid - hr_valid) ** 2).mean()))
+        global_bias = float((sr_valid - hr_valid).mean())
+
+        # PSNR on valid pixels
+        sr_1d      = torch.tensor(sr_valid, device=device).unsqueeze(0).unsqueeze(0)
+        hr_1d      = torch.tensor(hr_valid, device=device).unsqueeze(0).unsqueeze(0)
         scene_psnr = psnr_fn(sr_1d, hr_1d).item()
 
-        # SSIM needs 2D spatial context — reshape valid pixels into a 2D strip
-        # Use patch-level SSIM averaged across patches as scene-level SSIM
-        # (full-scene SSIM on sparse river strip is not meaningful)
-        patch_ssims = []
-        ds_scene = SRDataset(scene_patches, mean=model.hparams.mean, std=model.hparams.std)
-        ssim_patch_fn = StructuralSimilarityIndexMeasure(data_range=model.DATA_RANGE).to(device)
+        # SSIM on tight bounding box of covered region
+        rows_idx, cols_idx = np.where(valid)
+        rmin, rmax = rows_idx.min(), rows_idx.max() + 1
+        cmin, cmax = cols_idx.min(), cols_idx.max() + 1
 
-        for i in range(len(ds_scene)):
-            lrt, hrt, mkt = ds_scene[i]
-            with torch.no_grad():
-                srt = model(lrt.unsqueeze(0).to(device))
-            sr_p = model.denormalize(srt)
-            hr_p = model.denormalize(hrt.unsqueeze(0).to(device))
-            mk_p = mkt.unsqueeze(0).to(device)
-            sr_c, mk_c = model.crop_to_valid_bbox(sr_p, mk_p)
-            hr_c, _    = model.crop_to_valid_bbox(hr_p, mk_p)
-            if sr_c.shape[-1] >= 11 and sr_c.shape[-2] >= 11:
-                patch_ssims.append(ssim_patch_fn(sr_c, hr_c).item())
+        sr_crop_np = sr_canvas[rmin:rmax, cmin:cmax].copy()
+        hr_crop_np = hr_canvas[rmin:rmax, cmin:cmax].copy()
 
-        scene_ssim = float(np.mean(patch_ssims)) if patch_ssims else float("nan")
+        # Fill any interior NaN gaps (e.g. non-overlapping patch edges)
+        # with the scene mean — prevents SSIM window from straddling nodata
+        fill_val          = float(hr_valid.mean())
+        interior_nan      = np.isnan(sr_crop_np) | np.isnan(hr_crop_np)
+        sr_crop_np[interior_nan] = fill_val
+        hr_crop_np[interior_nan] = fill_val
 
-        print(f"  MAE : {global_mae:.4f} °C  |  PSNR : {scene_psnr:.2f} dB  |  SSIM : {scene_ssim:.3f}")
+        sr_crop    = torch.tensor(sr_crop_np, device=device).unsqueeze(0).unsqueeze(0)
+        hr_crop    = torch.tensor(hr_crop_np, device=device).unsqueeze(0).unsqueeze(0)
+        scene_ssim = (
+            ssim_fn(sr_crop, hr_crop).item()
+            if min(rmax - rmin, cmax - cmin) >= 11
+            else float("nan")
+        )
+
+        print(
+            f"  MAE  : {global_mae:.4f} °C  |  RMSE : {global_rmse:.4f} °C  |"
+            f"  Bias : {global_bias:+.4f} °C  |  PSNR : {scene_psnr:.2f} dB  |"
+            f"  SSIM : {scene_ssim:.4f}  |  valid px : {valid.sum():,}"
+        )
 
         scene_records.append({
-            "hr_image_id":      scene_id,
-            "global_mae_celsius": global_mae,
-            "scene_psnr":       scene_psnr,
-            "scene_ssim":       scene_ssim,
-            "n_patches":        len(scene_patches),
-            "valid_pixels":     int(valid.sum()),
-            "output_tif":       out_tif,
+            "hr_image_id":         scene_id,
+            "global_mae_celsius":  global_mae,
+            "global_rmse_celsius": global_rmse,
+            "global_bias_celsius": global_bias,
+            "scene_psnr":          scene_psnr,
+            "scene_ssim":          scene_ssim,
+            "n_patches":           len(scene_patches),
+            "valid_pixels":        int(valid.sum()),
+            "output_tif":          out_tif,
+            "hr_reassembled_tif":  hr_out_tif,
         })
 
     return scene_records
@@ -304,41 +340,47 @@ def main():
 
     # -------------------- Scene-level evaluation ------------------------------
     scene_summary = {}
-    if args.hr_full_dir:
-        scene_records = evaluate_scenes(
-            model         = model,
-            metadata      = subset,
-            hr_full_dir   = args.hr_full_dir,
-            output_dir    = args.output_dir or "results/SR_images",
-            hr_patch_size = args.hr_patch_size,
-            device        = device,
+
+    scene_records = evaluate_scenes(
+        model         = model,
+        metadata      = subset,
+        output_dir    = args.output_dir or "results/SR_images",
+        hr_patch_size = args.hr_patch_size,
+        device        = device,
+    )
+
+    if scene_records:
+        scene_table = wandb.Table(
+            columns=[
+                "hr_image_id", "global_mae_celsius", "global_rmse_celsius",
+                "global_bias_celsius", "scene_psnr", "scene_ssim",
+                "n_patches", "valid_pixels"
+            ]
         )
-
-        if scene_records:
-            scene_table = wandb.Table(
-                columns=["hr_image_id", "global_mae_celsius",
-                         "scene_psnr", "scene_ssim", "n_patches"]
+        for r in scene_records:
+            scene_table.add_data(
+                r["hr_image_id"],         r["global_mae_celsius"],
+                r["global_rmse_celsius"], r["global_bias_celsius"],
+                r["scene_psnr"],          r["scene_ssim"],
+                r["n_patches"],           r["valid_pixels"],
             )
-            for r in scene_records:
-                scene_table.add_data(
-                    r["hr_image_id"], r["global_mae_celsius"],
-                    r["scene_psnr"],  r["scene_ssim"], r["n_patches"]
-                )
 
-            scene_summary = {
-                "global_mae_mean":  np.mean([r["global_mae_celsius"] for r in scene_records]),
-                "scene_psnr_mean":  np.mean([r["scene_psnr"]         for r in scene_records]),
-                "scene_ssim_mean":  np.mean([r["scene_ssim"]         for r in scene_records]),
-            }
-            wandb.log({"scene_metrics": scene_table})
+        scene_summary = {
+            "scene_mae_mean":  np.mean([r["global_mae_celsius"]  for r in scene_records]),
+            "scene_rmse_mean": np.mean([r["global_rmse_celsius"] for r in scene_records]),
+            "scene_bias_mean": np.mean([r["global_bias_celsius"] for r in scene_records]),
+            "scene_psnr_mean": np.mean([r["scene_psnr"]          for r in scene_records]),
+            "scene_ssim_mean": np.mean([r["scene_ssim"]          for r in scene_records]),
+        }
+        wandb.log({"scene_metrics": scene_table})
 
-            print(f"\n{'─'*50}")
-            print(f"  Global MAE  : {scene_summary['global_mae_mean']:.4f} °C")
-            print(f"  Scene PSNR  : {scene_summary['scene_psnr_mean']:.2f} dB")
-            print(f"  Scene SSIM  : {scene_summary['scene_ssim_mean']:.3f}")
-            print(f"{'─'*50}\n")
-    else:
-        print("[WARN] --hr_full_dir not provided — skipping scene-level evaluation")
+        print(f"\n{'─'*50}")
+        print(f"  Scene MAE  : {scene_summary['scene_mae_mean']:.4f} °C")
+        print(f"  Scene RMSE : {scene_summary['scene_rmse_mean']:.4f} °C")
+        print(f"  Scene Bias : {scene_summary['scene_bias_mean']:+.4f} °C")
+        print(f"  Scene PSNR : {scene_summary['scene_psnr_mean']:.2f} dB")
+        print(f"  Scene SSIM : {scene_summary['scene_ssim_mean']:.4f}")
+        print(f"{'─'*50}\n")
 
     wandb.log({"patch_metrics": patch_table, **patch_summary, **scene_summary})
     wandb.finish()
@@ -352,14 +394,11 @@ def parse_args():
     )
     p.add_argument("--checkpoint",    required=True,
                    help="Local .ckpt or 'wandb:entity/project/model-ID:best'")
-    p.add_argument("--metadata_json", default="data/full_metadata.json",
-                   help="Global metadata JSON (from create_metadata.py)")
+    p.add_argument("--metadata_json", default="data/full_metadata.json")
     p.add_argument("--split",         default="test",
                    choices=["train", "val", "test"])
-    p.add_argument("--hr_full_dir",   default=None,
-                   help="Folder with full HR GeoTIFFs named {hr_image_id}.tif")
     p.add_argument("--output_dir",    default=None,
-                   help="Where to save SR full images (default: results/SR_images/)")
+                   help="Where to save SR + HR reassembled GeoTIFFs")
     p.add_argument("--hr_patch_size", type=int, default=512)
     p.add_argument("--num_workers",   type=int, default=2)
     p.add_argument("--project",       default="TIR_sisr")

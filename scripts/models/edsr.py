@@ -25,7 +25,7 @@ from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMe
 
 
 # ----------Gradient loss ---------------
-_spatial_gradient = SpatialGradient()   # shared instance, no re-init overhead
+_spatial_gradient = SpatialGradient()  # shared instance, no re-init overhead
 
 def gradient_loss(sr: torch.Tensor, hr: torch.Tensor,
                   mask: torch.Tensor) -> torch.Tensor:
@@ -61,7 +61,7 @@ class EDSRModule(pl.LightningModule):
         mean:              float = 0.0,
         std:               float = 1.0,
         learning_rate:     float = 1e-4,
-        backbone_lr_scale: float = 0.1,
+        bb_lr_scale: float = 0.1,
         patience:          int   = 5,
         n_feats:           int   = 64,
         n_blocks:          int   = 16,
@@ -213,19 +213,30 @@ class EDSRModule(pl.LightningModule):
 
     # ------------------- Optimizer --------------------
     def configure_optimizers(self):
-        backbone_params = [p for p in self.body.parameters() if p.requires_grad]
-        optimizer = optim.Adam(
-            [{"params": backbone_params,
-              "lr": self.hparams.learning_rate * self.hparams.backbone_lr_scale}],
-            weight_decay=1e-6,
-        )
+        backbone = []
+        head = []
+
+        for name, p in self.body.named_parameters():
+            if not p.requires_grad:
+                continue
+            if "conv_last" in name:
+                head.append(p)
+            else:
+                backbone.append(p)
+
+        optimizer = optim.Adam([
+            {"params": backbone, "lr": self.hparams.learning_rate * self.hparams.bb_lr_scale},
+            {"params": head,     "lr": self.hparams.learning_rate},
+        ], weight_decay=1e-6)
+
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, 
-            mode="max", 
-            factor=0.5, 
+            optimizer,
+            mode="max",
+            factor=0.5,
             patience=self.hparams.patience,
         )
+
         return {
-            "optimizer":    optimizer,
+            "optimizer": optimizer,
             "lr_scheduler": {"scheduler": scheduler, "monitor": "val_psnr"},
         }
