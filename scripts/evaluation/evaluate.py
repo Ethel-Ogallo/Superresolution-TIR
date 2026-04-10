@@ -25,11 +25,24 @@ from scripts.utils.dataset import SRDataset
 
 
 # -------------------- Model loading -------------------------------
-def load_model(ckpt_path: str, device: torch.device):
-    from scripts.models.edsr import EDSRModule
-    # from scripts.models.swinir import SwinIRModule
-    # from scripts.models.hat    import HATModule
-    REGISTRY = {"EDSRModule": EDSRModule}
+def load_model(ckpt_path: str, device: torch.device, model_name: str = "edsr"):
+    def _get_registry(name):
+        registry = {}
+        if name == "edsr":
+            from scripts.models.edsr import EDSRModule
+            registry["EDSRModule"] = EDSRModule
+        elif name == "swinir":
+            from scripts.models.swinir import SwinIRModule
+            registry["SwinIRModule"] = SwinIRModule
+        elif name == "hat":
+            from scripts.models.hat import HATModule
+            registry["HATModule"] = HATModule
+        elif name == "real_esrgan":
+            from scripts.models.realesrgan import RealESRGANModule
+            registry["RealESRGANModule"] = RealESRGANModule
+        return registry
+
+    REGISTRY = _get_registry(model_name)
 
     if ckpt_path.startswith("wandb:"):
         api   = wandb.Api()
@@ -148,6 +161,7 @@ def evaluate_scenes(
         ds = SRDataset(scene_patches,
                        mean=model.hparams.mean,
                        std=model.hparams.std,
+                       patch_size=48,
                        is_train=False)
 
         for i in range(len(ds)):
@@ -155,10 +169,15 @@ def evaluate_scenes(
             hr_row   = int(row_meta["hr_row"])
             hr_col   = int(row_meta["hr_col"])
 
-            lr_t, hr_t, _ = ds[i]
-            sr_t  = model(lr_t.unsqueeze(0).to(device))
-            sr_np = model.denormalize(sr_t).squeeze().cpu().numpy()
-            hr_np = model.denormalize(hr_t.unsqueeze(0)).squeeze().cpu().numpy()
+            lr_t, hr_t, mask_t = ds[i]   # ← capture mask_t instead of _
+            sr_t    = model(lr_t.unsqueeze(0).to(device))
+            sr_np   = model.denormalize(sr_t.cpu()).squeeze().numpy()
+            hr_np   = model.denormalize(hr_t.unsqueeze(0)).squeeze().numpy()
+            mask_np = mask_t.squeeze().numpy().astype(bool)  # True = river strip
+
+            # Apply strip mask — land pixels become nan, won't pollute canvas
+            sr_np = np.where(mask_np, sr_np, np.nan)
+            hr_np = np.where(mask_np, hr_np, np.nan)
 
             r0, r1 = hr_row, min(hr_row + hr_patch_size, max_row)
             c0, c1 = hr_col, min(hr_col + hr_patch_size, max_col)
@@ -255,12 +274,6 @@ def evaluate_scenes(
             else float("nan")
         )
 
-        # print(
-        #     f"  MAE  : {global_mae:.4f} °C  |  RMSE : {global_rmse:.4f} °C  |"
-        #     f"  Bias : {global_bias:+.4f} °C  |  PSNR : {scene_psnr:.2f} dB  |"
-        #     f"  SSIM : {scene_ssim:.4f}  |  valid px : {valid.sum():,}"
-        # )
-
         scene_records.append({
             "hr_image_id":         scene_id,
             "global_mae_celsius":  global_mae,
@@ -292,14 +305,30 @@ def main():
         all_meta = json.load(f)
     metadata = pd.DataFrame(all_meta)
     subset   = metadata[metadata["split"] == args.split].reset_index(drop=True)
+
+    # Audit: confirm no train campaigns leaked into this split
+    if "campaign_id" not in subset.columns:
+        subset["campaign_id"] = subset["patch_id"].str.split("_").str[0]
+
+    train_campaigns = set(metadata[metadata["split"] == "train"]["campaign_id"].unique())
+    test_campaigns  = set(subset["campaign_id"].unique())
+    leaked = train_campaigns & test_campaigns
+
+    if leaked:
+        raise RuntimeError(
+            f"[LEAKAGE] Campaigns appear in both train and {args.split}: {leaked}"
+        )
+
+    print(f"[INFO] Campaigns in '{args.split}' split: {sorted(test_campaigns)}")
     print(f"[INFO] {len(subset)} patches in '{args.split}' split "
           f"across {subset['hr_image_id'].nunique()} scene(s)")
 
     # Model 
-    model = load_model(args.checkpoint, device)
+    model = load_model(args.checkpoint, device, model_name=args.model)
 
     # ----------------- Patch-level evaluation -------------------------------
-    ds            = SRDataset(subset, mean=model.hparams.mean, std=model.hparams.std)
+    patch_size = args.lr_patch_size
+    ds = SRDataset(subset, mean=model.hparams.mean, std=model.hparams.std, patch_size=patch_size, is_train=False)
     patch_records = evaluate_patches(model, ds, device)
 
     psnr_vals = [r["psnr"]        for r in patch_records]
@@ -361,12 +390,25 @@ def main():
         }
         wandb.log({"scene_metrics": scene_table})
 
+        scene_df = pd.DataFrame(scene_records)
+        # campaign_id is the prefix of hr_image_id
+        scene_df["campaign_id"] = scene_df["hr_image_id"].str.split("_").str[0]
+
         print(f"\n{'='*50}")
         print(f"Scene MAE  : {scene_summary['scene_mae_mean']:.4f} °C")
         print(f"Scene RMSE : {scene_summary['scene_rmse_mean']:.4f} °C")
         print(f"Scene Bias : {scene_summary['scene_bias_mean']:+.4f} °C")
         print(f"Scene PSNR : {scene_summary['scene_psnr_mean']:.2f} dB")
         print(f"Scene SSIM : {scene_summary['scene_ssim_mean']:.4f}")
+
+        print(f"\n{'='*50}")
+        print("Per-campaign scene metrics:")
+        for cid, grp in scene_df.groupby("campaign_id"):
+            print(
+                f"  {cid}  MAE={grp['global_mae_celsius'].mean():.4f}°C  "
+                f"PSNR={grp['scene_psnr'].mean():.2f}dB  "
+                f"SSIM={grp['scene_ssim'].mean():.4f}"
+            )
 
     wandb.log({"patch_metrics": patch_table, **patch_summary, **scene_summary})
     wandb.finish()
@@ -378,6 +420,9 @@ def parse_args():
     p = argparse.ArgumentParser(
         description="Evaluate TIR SR model — patch metrics + full scene reassembly"
     )
+    p.add_argument("--model", default="edsr",
+               choices=["edsr", "swinir", "hat", "real_esrgan"],
+               help="Model architecture to evaluate")
     p.add_argument("--checkpoint",    required=True,
                    help="Local .ckpt or 'wandb:entity/project/model-ID:best'")
     p.add_argument("--metadata_json", default="data/full_metadata.json")
@@ -386,6 +431,8 @@ def parse_args():
     p.add_argument("--output_dir",    default=None,
                    help="Where to save SR + HR reassembled GeoTIFFs")
     p.add_argument("--hr_patch_size", type=int, default=512)
+    p.add_argument("--lr_patch_size", type=int, default=48,
+               help="LR patch size used during training (HR = lr * scale)")
     p.add_argument("--num_workers",   type=int, default=2)
     p.add_argument("--project",       default="TIR_sisr")
     p.add_argument("--group",         default=None)

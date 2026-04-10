@@ -2,6 +2,14 @@ import os
 import json
 import argparse
 
+
+def derive_campaign_id(entry: dict, patch_id: str) -> str:
+    """Derive campaign ID (e.g., PDR/DZM/BRC) from metadata fields."""
+    hr_image_id = entry.get("hr_image_id")
+    if isinstance(hr_image_id, str) and hr_image_id:
+        return hr_image_id.split("_")[0]
+    return patch_id.split("_")[0]
+
 def create_metadata(
     processed_dir: str,
     hr_patch_dir: str,
@@ -44,6 +52,7 @@ def create_metadata(
 
             # Add patch_id and paths
             entry["patch_id"] = patch_id
+            entry["campaign_id"] = derive_campaign_id(entry, patch_id)
             entry["hr_path"] = hr_path
             entry["lr_path"] = lr_path
 
@@ -87,6 +96,6 @@ if __name__ == "__main__":
 # usage
 # python scripts/preprocess/create_metadata.py \
 #   --processed_dir data/processed \
-#   --hr_patch_dir data/processed/sample_tir/HR \
-#   --lr_patch_dir data/processed/sample_tir/LR \
+#   --hr_patch_dir data/processed/tir_patches/HR \
+#   --lr_patch_dir data/processed/tir_patches/LR \
 #   --output_json data/full_metadata.json
