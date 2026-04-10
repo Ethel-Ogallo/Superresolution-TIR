@@ -21,4 +21,5 @@ __pycache__/
 .ipynb_checkpoints/
 
 # OS files
-.DS_Store
+.DS_Store4
+slurm-*.out
