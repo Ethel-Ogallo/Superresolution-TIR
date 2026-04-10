@@ -2,7 +2,7 @@
 edsr.py — EDSR Lightning module for TIR super-resolution (x4).
 
 Data flow:
-  dataset  →  (1, H, W)  →  repeat(1,3,1,1)  →  EDSR backbone  →  (1, H*4, W*4)
+  dataset  - (1, H, W)  -  repeat(1,3,1,1)  -  EDSR backbone  -  (1, H*4, W*4)
 
 Loss:
   L_total = L1(SR, HR) + lambda_grad * GradientLoss(SR, HR)
@@ -22,7 +22,7 @@ from basicsr.archs import edsr_arch
 from kornia.filters import SpatialGradient
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 
-
+#TODO: look into LPIPS metric
 
 # ----------Gradient loss ---------------
 _spatial_gradient = SpatialGradient()  # shared instance, no re-init overhead
@@ -52,8 +52,8 @@ def gradient_loss(sr: torch.Tensor, hr: torch.Tensor,
 # ------------------- Model ----------------------------
 
 class EDSRModule(pl.LightningModule):
-
-    DATA_RANGE = 60.0   # °C — used by PSNR / SSIM
+#TODO: include patching logic in the model instead of dataset, to avoid edge artifacts in metrics and allow variable-size inputs.
+    DATA_RANGE = 60.0   # °C — used by PSNR / SSIM  ?? Should this be based on train data stats instead of a fixed value?
 
     def __init__(
         self,

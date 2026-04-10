@@ -87,6 +87,8 @@ def set_seed(seed: int = 42):
 
 
 # ---------------------- Splits ---------------------
+#TODO: campaign wise rather than patch wise to avoid data leakage
+#TODO: spatial split/startified split?
 def build_splits(metadata_json: str):
     with open(metadata_json) as f:
         metadata = pd.DataFrame(json.load(f))
@@ -162,15 +164,15 @@ def main():
     # Augmentation pipeline (same for all models — it's data-side, not model-side)
     train_aug = Compose([
         GeoAugment(),
-        ThermalShift(range_c=2.0, sensor_bias_range=0.5),
+        ThermalShift(range_c=2.0),
         ContrastScaling(range_alpha=(0.90, 1.10)),
         TIRNoise(std=std, p=0.5),
         BlurAugment(sigma_range=(0.5, 1.5)),
     ])
 
-    train_ds = SRDataset(train_df, mean=mean, std=std, transforms=train_aug)
-    val_ds   = SRDataset(val_df,   mean=mean, std=std, transforms=None)
-    test_ds  = SRDataset(test_df,  mean=mean, std=std, transforms=None)
+    train_ds = SRDataset(train_df, mean=mean, std=std, is_train=True, transforms=train_aug)
+    val_ds   = SRDataset(val_df,   mean=mean, std=std, is_train=False, transforms=None)
+    test_ds  = SRDataset(test_df,  mean=mean, std=std, is_train=False, transforms=None)
 
     loader_kw    = dict(num_workers=args.num_workers, pin_memory=True)
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,  **loader_kw)

@@ -19,12 +19,11 @@ cd /share/castor/home/e2406751/Superresolution-TIR
 # Checkpoint: wandb.ai → TIR_sisr → your run → Artifacts tab → copy path
 # Format: ogalloethel-university-of-south-brittany/TIR_sisr/model-<run_id>:best
 python -m scripts.evaluation.evaluate \
-    --checkpoint   "wandb:ogalloethel-university-of-south-brittany/TIR_sisr/model-s1dxac6f:best" \
+    --checkpoint   "wandb:ogalloethel-university-of-south-brittany/TIR_sisr/model-q7pu5si6:best" \
     --metadata_json data/full_metadata.json \
     --split        test \
-    --hr_full_dir  data/processed/HR_downsampled/ \
     --output_dir   results/SR_images/ \
     --num_workers  2 \
     --project      TIR_sisr \
     --run_name     eval_frozen_v2 \
-    --group        3c-repeat+data-aug
+    --group        patching_exp

@@ -6,14 +6,7 @@ Two evaluation levels:
   2. Scene-level  : reassemble all patches per hr_image_id into full image,
                     compute global MAE vs full HR ground truth
 
-Metadata is a JSON file (produced by create_metadata.py) with fields:
-    hr_image_id, patch_id, hr_path, lr_path, hr_row, hr_col,
-    hr_transform, crs, split
-
-For scene-level evaluation, pass --hr_full_dir pointing to the folder
-containing the original full HR GeoTIFFs, named {hr_image_id}.tif
-
-Launch via: sbatch jobs/eval_edsr.slurm
+Launch via: sbatch jobs/eval.sh
 """
 
 import argparse
@@ -45,7 +38,7 @@ def load_model(ckpt_path: str, device: torch.device):
         ckpt_path = next(
             os.path.join(local, f) for f in os.listdir(local) if f.endswith(".ckpt")
         )
-        print(f"[INFO] Downloaded checkpoint → {ckpt_path}")
+        print(f"[INFO] Downloaded checkpoint: {ckpt_path}")
 
     raw      = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     cls_name = raw.get("hyper_parameters", {}).get("model_class", None)
@@ -119,10 +112,6 @@ def evaluate_scenes(
          (same patch footprints, same overlap averaging)
       3. Compute global MAE / PSNR / SSIM on the reassembled pair
       4. Save SR GeoTIFF to output_dir
-
-    No full-scene HR GeoTIFF is needed — the reference is built
-    from the same patches as the prediction, making the comparison
-    perfectly symmetric.
     """
     psnr_fn = PeakSignalNoiseRatio(data_range=model.DATA_RANGE).to(device)
     ssim_fn = StructuralSimilarityIndexMeasure(
@@ -133,11 +122,10 @@ def evaluate_scenes(
 
     for scene_id, scene_patches in metadata.groupby("hr_image_id"):
         scene_patches = scene_patches.reset_index(drop=True)
-        print(f"\n[INFO] Scene: {scene_id}  ({len(scene_patches)} patches)")
+        print(f"[INFO] Scene: {scene_id}  ({len(scene_patches)} patches)")
 
         # Canvas dimensions from metadata transform + patch positions
-        # We don't need the full HR GeoTIFF anymore — derive canvas size
-        # from the maximum patch extent recorded in metadata
+        # derive canvas size from the maximum patch extent recorded in metadata
         max_row = int(scene_patches["hr_row"].max()) + hr_patch_size
         max_col = int(scene_patches["hr_col"].max()) + hr_patch_size
 
@@ -159,7 +147,8 @@ def evaluate_scenes(
 
         ds = SRDataset(scene_patches,
                        mean=model.hparams.mean,
-                       std=model.hparams.std)
+                       std=model.hparams.std,
+                       is_train=False)
 
         for i in range(len(ds)):
             row_meta = scene_patches.iloc[i]
@@ -200,7 +189,7 @@ def evaluate_scenes(
         valid = ~np.isnan(sr_canvas) & ~np.isnan(hr_canvas)
 
         if valid.sum() == 0:
-            print(f"  [WARN] No valid pixels for scene {scene_id} — skipping")
+            print(f"[WARN] No valid pixels for scene {scene_id} — skipping")
             continue
 
         # Save SR GeoTIFF (trimmed to actual coverage)
@@ -227,8 +216,8 @@ def evaluate_scenes(
         ) as dst:
             dst.write(hr_out, 1)
 
-        print(f"  [INFO] Saved SR  → {out_tif}")
-        print(f"  [INFO] Saved HR  → {hr_out_tif}")
+        print(f"[INFO] Saved SR: {out_tif}")
+        print(f"[INFO] Saved HR: {hr_out_tif}")
 
         # ── Global metrics on reassembled pair ──────────────────────────────
         sr_valid = sr_canvas[valid].astype(np.float32)
@@ -266,11 +255,11 @@ def evaluate_scenes(
             else float("nan")
         )
 
-        print(
-            f"  MAE  : {global_mae:.4f} °C  |  RMSE : {global_rmse:.4f} °C  |"
-            f"  Bias : {global_bias:+.4f} °C  |  PSNR : {scene_psnr:.2f} dB  |"
-            f"  SSIM : {scene_ssim:.4f}  |  valid px : {valid.sum():,}"
-        )
+        # print(
+        #     f"  MAE  : {global_mae:.4f} °C  |  RMSE : {global_rmse:.4f} °C  |"
+        #     f"  Bias : {global_bias:+.4f} °C  |  PSNR : {scene_psnr:.2f} dB  |"
+        #     f"  SSIM : {scene_ssim:.4f}  |  valid px : {valid.sum():,}"
+        # )
 
         scene_records.append({
             "hr_image_id":         scene_id,
@@ -289,7 +278,6 @@ def evaluate_scenes(
 
 
 # -------------------- Main ----------------------------
-
 def main():
     args   = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -332,11 +320,10 @@ def main():
         "patch_mae_std":    np.std(mae_vals),
     }
 
-    print(f"\n{'─'*50}")
-    print(f"  Patch PSNR : {patch_summary['patch_psnr_mean']:.2f} ± {patch_summary['patch_psnr_std']:.2f} dB")
-    print(f"  Patch SSIM : {patch_summary['patch_ssim_mean']:.3f} ± {patch_summary['patch_ssim_std']:.3f}")
-    print(f"  Patch MAE  : {patch_summary['patch_mae_mean']:.4f} ± {patch_summary['patch_mae_std']:.4f} °C")
-    print(f"{'─'*50}\n")
+    print(f"\n{'='*50}")
+    print(f"Patch PSNR : {patch_summary['patch_psnr_mean']:.2f} ± {patch_summary['patch_psnr_std']:.2f} dB")
+    print(f"Patch SSIM : {patch_summary['patch_ssim_mean']:.3f} ± {patch_summary['patch_ssim_std']:.3f}")
+    print(f"Patch MAE  : {patch_summary['patch_mae_mean']:.4f} ± {patch_summary['patch_mae_std']:.4f} °C")
 
     # -------------------- Scene-level evaluation ------------------------------
     scene_summary = {}
@@ -374,13 +361,12 @@ def main():
         }
         wandb.log({"scene_metrics": scene_table})
 
-        print(f"\n{'─'*50}")
-        print(f"  Scene MAE  : {scene_summary['scene_mae_mean']:.4f} °C")
-        print(f"  Scene RMSE : {scene_summary['scene_rmse_mean']:.4f} °C")
-        print(f"  Scene Bias : {scene_summary['scene_bias_mean']:+.4f} °C")
-        print(f"  Scene PSNR : {scene_summary['scene_psnr_mean']:.2f} dB")
-        print(f"  Scene SSIM : {scene_summary['scene_ssim_mean']:.4f}")
-        print(f"{'─'*50}\n")
+        print(f"\n{'='*50}")
+        print(f"Scene MAE  : {scene_summary['scene_mae_mean']:.4f} °C")
+        print(f"Scene RMSE : {scene_summary['scene_rmse_mean']:.4f} °C")
+        print(f"Scene Bias : {scene_summary['scene_bias_mean']:+.4f} °C")
+        print(f"Scene PSNR : {scene_summary['scene_psnr_mean']:.2f} dB")
+        print(f"Scene SSIM : {scene_summary['scene_ssim_mean']:.4f}")
 
     wandb.log({"patch_metrics": patch_table, **patch_summary, **scene_summary})
     wandb.finish()

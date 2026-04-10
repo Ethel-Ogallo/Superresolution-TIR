@@ -30,10 +30,57 @@ def compute_mean_std(metadata: pd.DataFrame) -> tuple[float, float]:
     print(f"  Train mean : {mean:.4f} °C  |  std : {std:.4f} °C")
     return float(mean), float(std)
 
+# ---------------- patching image ---------------------
+# class RandomPatch:
+#     """
+#     Crops a random sub-patch from the input arrays.
+#     Essential for matching EDSR/SwinIR training standards.
+#     """
+#     def __init__(self, lr_size=48, scale=4):
+#         self.lr_size = lr_size
+#         self.hr_size = lr_size * scale
+#         self.scale = scale
+
+#     def __call__(self, lr, hr, mask):
+#         h, w = lr.shape
+        
+#         # If the tile is smaller than our target crop, we have a problem.
+#         # Logical Fix: Ensure we only process tiles that are at least 48x48.
+#         if h < self.lr_size or w < self.lr_size:
+#             # Option A: Raise error to find the bad file
+#             # raise ValueError(f"Input image size ({h}x{w}) is smaller than crop size {self.lr_size}")
+            
+#             # Option B: Center pad the image to 48x48 (Safer for execution)
+#             pad_h = max(0, self.lr_size - h)
+#             pad_w = max(0, self.lr_size - w)
+#             lr = np.pad(lr, ((0, pad_h), (0, pad_w)), mode='reflect')
+#             hr = np.pad(hr, ((0, pad_h * self.scale), (0, pad_w * self.scale)), mode='reflect')
+#             mask = np.pad(mask, ((0, pad_h * self.scale), (0, pad_w * self.scale)), mode='reflect')
+#             h, w = lr.shape # update dimensions after padding
+
+#         # Pick random top-left corner
+#         x = random.randint(0, w - self.lr_size)
+#         y = random.randint(0, h - self.lr_size)
+
+#         # Slice LR
+#         lr_patch = lr[y : y + self.lr_size, x : x + self.lr_size]
+        
+#         # Slice HR and Mask using scaled coordinates
+#         y_hr, x_hr = y * self.scale, x * self.scale # scale = 4
+#         hr_patch = hr[y_hr : y_hr + self.hr_size, x_hr : x_hr + self.hr_size]
+#         mask_patch = mask[y_hr : y_hr + self.hr_size, x_hr : x_hr + self.hr_size]
+        
+#         return lr_patch, hr_patch, mask_patch
+
+
 # ------------ Data Augmentations ----------------
+#TODO: utilize kornia or pytorch to do the augmentations
+
 class GeoAugment:
     """Geometric transforms: flips + 90° rotations."""
-
+#TODO: why not just use torchvision.transforms.RandomHorizontalFlip and RandomVerticalFlip and RandomRotation? 
+# Because we need to apply the same transforms to both LR and HR (and mask), and torchvision's functional API is a bit clunky for that. 
+# This custom class allows us to easily apply the same random transform to all three arrays in a consistent way.
     def __call__(self, lr, hr, mask):
         if random.random() > 0.5:
             lr = np.fliplr(lr).copy()
@@ -54,7 +101,7 @@ class GeoAugment:
 class TIRNoise:
     """
     Adds calibrated noise to LR only.
-    std should be estimated from actual LR (Landsat-8) patches.
+    std is estimated from the LR (Landsat-8) patches.
     """
 
     def __init__(self, std, p=0.5):
@@ -72,24 +119,22 @@ class TIRNoise:
 class ThermalShift:
     """
     Global diurnal shift applied to both (physically consistent).
-    Optional inter-sensor bias applied to LR only.
+    Optional inter-sensor bias applied to LR only. ??sensor bias??
     """
-
-    def __init__(self, range_c=2.0, sensor_bias_range=0.5):
+    def __init__(self, range_c=2.0):  #sensor_bias_range=0.5
         self.range_c = range_c
-        self.sensor_bias = sensor_bias_range
+        # self.sensor_bias = sensor_bias_range
 
     def __call__(self, lr, hr, mask):
         shift = random.uniform(-self.range_c, self.range_c)
-        bias = random.uniform(-self.sensor_bias, self.sensor_bias)
-        return lr + shift + bias, hr + shift, mask
+        # bias = random.uniform(-self.sensor_bias, self.sensor_bias)
+        return lr + shift , hr + shift, mask  #+ bias
 
 
 class ContrastScaling:
     """
-    Scales thermal gradients around each image's own mean.
+    Scales thermal gradients around each image's own mean. ??physically meaningful??
     """
-
     def __init__(self, range_alpha=(0.90, 1.10)):
         self.range_alpha = range_alpha
 
@@ -108,8 +153,7 @@ class BlurAugment:
     Blurs LR only to simulate sensor PSF variability.
     Handles both (H, W) and (1, H, W) shapes.
     """
-
-    def __init__(self, sigma_range=(0.5, 1.5)):
+    def __init__(self, sigma_range=(0.5, 1.5)): #??how to choose sigma range??
         self.sigma_range = sigma_range
 
     def __call__(self, lr, hr, mask):
@@ -133,47 +177,65 @@ class Compose:
 
 # ------------- Dataset -----------------------------
 class SRDataset(Dataset):
-    def __init__(self, metadata: pd.DataFrame, mean: float = None, std: float = None, transforms = None):
-        self.samples    = metadata.reset_index(drop=True)
-        self.mean       = mean
-        self.std        = std
-        self.transform  = transforms
-
-    def __len__(self): return len(self.samples)
+    def __init__(self, metadata, mean=None, std=None, 
+                 patch_size=48, scale=4, transforms=None, 
+                 is_train=True):
+        self.samples = metadata.reset_index(drop=True)
+        self.mean = mean
+        self.std = std
+        self.transform = transforms
+        self.patch_size = patch_size
+        self.scale = scale
+        self.is_train = is_train
+    
+    def __len__(self):
+        return len(self.samples)
 
     def __getitem__(self, idx):
         row = self.samples.iloc[idx]
 
         with rasterio.open(row["lr_path"]) as src:
+            lr = src.read(1).astype(np.float32)
             nodata_lr = src.nodata
-            lr        = src.read(1).astype(np.float32)
-
         with rasterio.open(row["hr_path"]) as src:
+            hr = src.read(1).astype(np.float32)
             nodata_hr = src.nodata
-            hr        = src.read(1).astype(np.float32)
 
-        # Build mask BEFORE filling nodata
+        # 1. Handle Nodata/NaN early
         hr_mask = (hr != nodata_hr).astype(np.float32) if nodata_hr is not None else (~np.isnan(hr)).astype(np.float32)
-
-        # EDIT: Filling LR with mean instead of 0.0 for better radiometric consistency
         fill = float(self.mean) if self.mean is not None else 0.0
-
         hr = np.nan_to_num(hr, nan=fill) if nodata_hr is None else np.where(hr == nodata_hr, fill, hr)
         lr = np.nan_to_num(lr, nan=fill) if nodata_lr is None else np.where(lr == nodata_lr, fill, lr)
 
-        # Apply augmentations (Applied to raw Celsius values)
+        # Patch Extraction (Only if Training)
+        if self.is_train:
+            ih, iw = lr.shape[:2]
+            # Ensure we don't pick a starting point that goes out of bounds
+            iy = random.randint(0, ih - self.patch_size)
+            ix = random.randint(0, iw - self.patch_size)
+            
+            lr = lr[iy : iy + self.patch_size, ix : ix + self.patch_size]
+            
+            # Scale coordinates for HR and Mask
+            iy_h, ix_h = iy * self.scale, ix * self.scale
+            ph_h = self.patch_size * self.scale
+            hr = hr[iy_h : iy_h + ph_h, ix_h : ix_h + ph_h]
+            hr_mask = hr_mask[iy_h : iy_h + ph_h, ix_h : ix_h + ph_h]
+
+        # Apply Remaining Augmentations 
         if self.transform is not None:
             lr, hr, hr_mask = self.transform(lr, hr, hr_mask)
 
-        # Ensure contiguous for PyTorch
+        # to tensors and normalize
         lr, hr, hr_mask = np.ascontiguousarray(lr), np.ascontiguousarray(hr), np.ascontiguousarray(hr_mask)
-
-        lr_t   = torch.from_numpy(lr).unsqueeze(0).float()
-        hr_t   = torch.from_numpy(hr).unsqueeze(0).float()
-        mask_t = torch.from_numpy(hr_mask).unsqueeze(0).float()
+        
+        lr_t = torch.from_numpy(lr).unsqueeze(0)
+        hr_t = torch.from_numpy(hr).unsqueeze(0)
+        mask_t = torch.from_numpy(hr_mask).unsqueeze(0)
 
         if self.mean is not None and self.std is not None:
             lr_t = (lr_t - self.mean) / self.std
             hr_t = (hr_t - self.mean) / self.std
 
         return lr_t, hr_t, mask_t
+

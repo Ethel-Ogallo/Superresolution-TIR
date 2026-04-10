@@ -1,4 +1,3 @@
-stuff.txt
 rgb_test_data/
 TIR+LS_test/
 .vscode/
@@ -8,3 +7,9 @@ scripts/__pycache__/
 scripts/visualization/__pycache__/
 wandb/
 TIR_sisr/
+wandb/
+*.pth
+*.ckpt
+data/raw/
+results/
+__pycache__/

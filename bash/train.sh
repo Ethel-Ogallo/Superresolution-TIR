@@ -30,5 +30,5 @@ python -m scripts.training.train  \
     --freeze_backbone \
     --run_test \
     --project TIR_sisr \
-    --run_name EDSR_frozen_v4 \
-    --group 3c-repeat+data-aug
+    --run_name EDSR_frozen_v1 \
+    --group patching_exp
