@@ -13,3 +13,12 @@ wandb/
 data/raw/
 results/
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS files
+.DS_Store
