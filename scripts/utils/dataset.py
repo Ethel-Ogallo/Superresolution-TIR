@@ -25,54 +25,29 @@ def compute_mean_std(metadata: pd.DataFrame) -> tuple[float, float]:
         pixel_sq    += (valid ** 2).sum()
         pixel_count += len(valid)
 
+
     mean = pixel_sum / pixel_count
     std  = np.sqrt(max(pixel_sq / pixel_count - mean ** 2, 0.0))
     print(f"  Train mean : {mean:.4f} °C  |  std : {std:.4f} °C")
     return float(mean), float(std)
 
-# ---------------- patching image ---------------------
-# class RandomPatch:
-#     """
-#     Crops a random sub-patch from the input arrays.
-#     Essential for matching EDSR/SwinIR training standards.
-#     """
-#     def __init__(self, lr_size=48, scale=4):
-#         self.lr_size = lr_size
-#         self.hr_size = lr_size * scale
-#         self.scale = scale
+def compute_data_range(metadata):
+    global_min = float("inf")
+    global_max = float("-inf")
 
-#     def __call__(self, lr, hr, mask):
-#         h, w = lr.shape
-        
-#         # If the tile is smaller than our target crop, we have a problem.
-#         # Logical Fix: Ensure we only process tiles that are at least 48x48.
-#         if h < self.lr_size or w < self.lr_size:
-#             # Option A: Raise error to find the bad file
-#             # raise ValueError(f"Input image size ({h}x{w}) is smaller than crop size {self.lr_size}")
-            
-#             # Option B: Center pad the image to 48x48 (Safer for execution)
-#             pad_h = max(0, self.lr_size - h)
-#             pad_w = max(0, self.lr_size - w)
-#             lr = np.pad(lr, ((0, pad_h), (0, pad_w)), mode='reflect')
-#             hr = np.pad(hr, ((0, pad_h * self.scale), (0, pad_w * self.scale)), mode='reflect')
-#             mask = np.pad(mask, ((0, pad_h * self.scale), (0, pad_w * self.scale)), mode='reflect')
-#             h, w = lr.shape # update dimensions after padding
+    for _, row in metadata.iterrows():
+        with rasterio.open(row["hr_path"]) as src:
+            nodata = src.nodata
+            hr = src.read(1).astype(np.float32)
 
-#         # Pick random top-left corner
-#         x = random.randint(0, w - self.lr_size)
-#         y = random.randint(0, h - self.lr_size)
+        valid = hr[hr != nodata] if nodata is not None else hr[~np.isnan(hr)]
+        if len(valid) == 0:
+            continue
 
-#         # Slice LR
-#         lr_patch = lr[y : y + self.lr_size, x : x + self.lr_size]
-        
-#         # Slice HR and Mask using scaled coordinates
-#         y_hr, x_hr = y * self.scale, x * self.scale # scale = 4
-#         hr_patch = hr[y_hr : y_hr + self.hr_size, x_hr : x_hr + self.hr_size]
-#         mask_patch = mask[y_hr : y_hr + self.hr_size, x_hr : x_hr + self.hr_size]
-        
-#         return lr_patch, hr_patch, mask_patch
+        global_min = min(global_min, valid.min())
+        global_max = max(global_max, valid.max())
 
-
+    return float(global_max - global_min)
 # ------------ Data Augmentations ----------------
 #TODO: utilize kornia or pytorch to do the augmentations
 

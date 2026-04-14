@@ -20,10 +20,7 @@ python -m scripts.training.train \
     --model edsr \
     --metadata_json data/full_metadata.json \
     --pretrained /share/home/e2406751/Superresolution-TIR/data/pretrained/EDSR_baseline_x4.pth \
-    --split_mode campaign \
-    --holdout_campaign PDR \
-    --val_campaign DZM \
-    --force_resplit \
+    --loo \
     --lr 1e-4 \
     --lambda_grad 0.5 \
     --bb_lr_scale 0.1 \
@@ -31,11 +28,10 @@ python -m scripts.training.train \
     --patience 30 \
     --batch_size 4 \
     --num_workers 2 \
-    --freeze_backbone \
-    --run_test \
+    --run_name EDSR_frozen \
+    --group LOO_benchmark \
     --project TIR_sisr \
-    --run_name EDSR_frozen_PDR \
-    --group campaign_splits
+    --freeze_backbone 
 
 
 # ===============================

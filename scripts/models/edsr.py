@@ -53,13 +53,14 @@ def gradient_loss(sr: torch.Tensor, hr: torch.Tensor,
 
 class EDSRModule(pl.LightningModule):
 #TODO: include patching logic in the model instead of dataset, to avoid edge artifacts in metrics and allow variable-size inputs.
-    DATA_RANGE = 60.0   # °C — used by PSNR / SSIM  ?? Should this be based on train data stats instead of a fixed value?
+    # DATA_RANGE = 60.0   # °C — used by PSNR / SSIM  ?? Should this be based on train data stats instead of a fixed value?
 
     def __init__(
         self,
         pretrained_path:   str   = None,
         mean:              float = 0.0,
         std:               float = 1.0,
+        data_range: float = 1.0,
         learning_rate:     float = 1e-4,
         bb_lr_scale: float = 0.1,
         patience:          int   = 5,
@@ -97,9 +98,9 @@ class EDSRModule(pl.LightningModule):
         # Metrics
         for split in ("train", "val", "test"):
             setattr(self, f"{split}_psnr",
-                    PeakSignalNoiseRatio(data_range=self.DATA_RANGE))
+                    PeakSignalNoiseRatio(data_range=self.hparams.data_range))
             setattr(self, f"{split}_ssim",
-                    StructuralSimilarityIndexMeasure(data_range=self.DATA_RANGE))
+                    StructuralSimilarityIndexMeasure(data_range=self.hparams.data_range))
 
     # ------- Helpers -------------
     def denormalize(self, t: torch.Tensor) -> torch.Tensor:

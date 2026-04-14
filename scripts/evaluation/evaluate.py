@@ -420,14 +420,12 @@ def parse_args():
     p = argparse.ArgumentParser(
         description="Evaluate TIR SR model — patch metrics + full scene reassembly"
     )
-    p.add_argument("--model", default="edsr",
-               choices=["edsr", "swinir", "hat", "real_esrgan"],
+    p.add_argument("--model", default="edsr", choices=["edsr", "swinir", "hat", "real_esrgan"],
                help="Model architecture to evaluate")
     p.add_argument("--checkpoint",    required=True,
                    help="Local .ckpt or 'wandb:entity/project/model-ID:best'")
     p.add_argument("--metadata_json", default="data/full_metadata.json")
-    p.add_argument("--split",         default="test",
-                   choices=["train", "val", "test"])
+    p.add_argument("--split",         default="test", choices=["train", "val", "test"])
     p.add_argument("--output_dir",    default=None,
                    help="Where to save SR + HR reassembled GeoTIFFs")
     p.add_argument("--hr_patch_size", type=int, default=512)
