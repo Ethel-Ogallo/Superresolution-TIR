@@ -10,6 +10,9 @@ Usage:
     python -m scripts.training.train --model edsr --loo
     python -m scripts.training.train --model edsr --holdout_campaign BCR_2022
     python -m scripts.training.train --model edsr --random_split
+    python -m scripts.training.train --model real_esrgan --loo \
+        --pretrained weights/RealESRGAN_x4plus.pth \
+        --pretrained_d weights/RealESRGAN_x4plus_netD.pth
 """
 
 import argparse
@@ -87,7 +90,6 @@ def _derive_campaign_id(row: pd.Series) -> str:
     for key in ("campaign_id", "hr_image_id", "patch_name", "patch_id"):
         value = row.get(key, None)
         if isinstance(value, str) and value.strip():
-            # Keep first two parts e.g. BRC_2022, not just BRC
             parts = value.split("_")
             return "_".join(parts[:2]) if len(parts) >= 2 else parts[0]
     return "unknown"
@@ -113,13 +115,14 @@ def random_split(metadata: pd.DataFrame):
     print(f"  Random split — train: {len(train_df)} | val: {len(val_df)} | test: {len(test_df)}")
     return train_df, val_df, test_df
 
+
 def save_split_to_metadata(train_df, val_df, test_df, metadata_json: str, strategy: str):
     """Write split assignments back to the source metadata JSON."""
     with open(metadata_json) as f:
         metadata = pd.DataFrame(json.load(f))
 
     metadata["split"] = None
-    metadata["split_strategy"] = strategy 
+    metadata["split_strategy"] = strategy
     metadata.loc[metadata["patch_name"].isin(train_df["patch_name"]), "split"] = "train"
     metadata.loc[metadata["patch_name"].isin(val_df["patch_name"]),   "split"] = "val"
     metadata.loc[metadata["patch_name"].isin(test_df["patch_name"]),  "split"] = "test"
@@ -127,6 +130,7 @@ def save_split_to_metadata(train_df, val_df, test_df, metadata_json: str, strate
     with open(metadata_json, "w") as f:
         json.dump(json.loads(metadata.to_json(orient="records", indent=2)), f, indent=2)
     print(f"  Split ({strategy}) saved to {metadata_json}")
+
 
 # ---------------------- Core training function ---------------------
 def run_fold(
@@ -143,12 +147,10 @@ def run_fold(
     print(f"{'='*50}")
 
     mean, std  = compute_mean_std(train_df)
-    data_range = compute_data_range(train_df)  # computed from train fold only
+    data_range = compute_data_range(train_df)
 
     train_aug = Compose([
         GeoAugment(),
-        # ThermalShift(range_c=1.0),
-        # ContrastScaling(range_alpha=(0.95, 1.05)),
         TIRNoise(std=std, p=0.5),
         BlurAugment(sigma_range=(0.5, 1.2)),
     ])
@@ -162,40 +164,54 @@ def run_fold(
     val_loader   = DataLoader(val_ds,   batch_size=args.batch_size, shuffle=False, **loader_kw)
     test_loader  = DataLoader(test_ds,  batch_size=1,               shuffle=False, **loader_kw)
 
-    # Build model — filter yaml keys already passed explicitly
+    # ── Build model ──────────────────────────────────────────────────── #
     cls           = get_model_class(args.model)
-    explicit_keys = {"mean", "std", "learning_rate", "patience", "pretrained_path",
-                     "freeze_backbone", "bb_lr_scale", "lambda_grad", "model_class",
-                     "precision", "data_range"}
+    explicit_keys = {
+        "mean", "std", "learning_rate", "patience", "pretrained_path",
+        "pretrained_g_path", "pretrained_d_path",
+        "freeze_backbone", "bb_lr_scale", "lambda_grad", "model_class",
+        "precision", "data_range",
+    }
     model_hparams = {k: v for k, v in model_cfg.items() if k not in explicit_keys}
-    init_params = inspect.signature(cls.__init__).parameters
+    init_params   = inspect.signature(cls.__init__).parameters
 
     if "data_range" in init_params:
         model_hparams["data_range"] = data_range
-    
-    # ── FIX: precision is per-model, not hardcoded ──
-    # fp16 for shallow CNNs (EDSR), bf16 for transformer-based models
-    # (SwinIR, HAT, RealESRGAN) which overflow fp16 due to large attention weights
-    precision = model_cfg.get("precision", "bf16-mixed")  # bf16 as safe default
+
+    precision = model_cfg.get("precision", "bf16-mixed")
     print(f"[INFO] Using precision: {precision} for {args.model}")
 
-    model = cls(
-        mean=mean, std=std,
-        learning_rate=args.lr,
-        patience=args.patience,
-        pretrained_path=args.pretrained,
-        freeze_backbone=args.freeze_backbone,
-        bb_lr_scale=args.bb_lr_scale,
-        lambda_grad=args.lambda_grad,
-        **model_hparams,
-    )
+    # ── RealESRGAN takes two pretrained paths; all other models take one ─ #
+    if args.model == "real_esrgan":
+        model = cls(
+            mean=mean, std=std,
+            learning_rate=args.lr,
+            patience=args.patience,
+            pretrained_g_path=args.pretrained,    # --pretrained  (generator)
+            pretrained_d_path=args.pretrained_d,  # --pretrained_d (discriminator)
+            freeze_backbone=args.freeze_backbone,
+            bb_lr_scale=args.bb_lr_scale,
+            lambda_grad=args.lambda_grad,
+            **model_hparams,
+        )
+    else:
+        model = cls(
+            mean=mean, std=std,
+            learning_rate=args.lr,
+            patience=args.patience,
+            pretrained_path=args.pretrained,      # --pretrained  (single ckpt)
+            freeze_backbone=args.freeze_backbone,
+            bb_lr_scale=args.bb_lr_scale,
+            lambda_grad=args.lambda_grad,
+            **model_hparams,
+        )
 
     run_name = f"{args.run_name or args.model.upper()}_{fold_name}"
     group    = args.group or args.model.upper()
 
     wandb_logger = WandbLogger(
-        project=args.project, 
-        name=run_name, 
+        project=args.project,
+        name=run_name,
         group=group,
         log_model='all',
         config={**model_cfg, **vars(args), "fold": fold_name},
@@ -212,13 +228,13 @@ def run_fold(
     ]
 
     trainer = Trainer(
-        max_epochs=args.max_epochs, 
-        accelerator="auto", 
+        max_epochs=args.max_epochs,
+        accelerator="auto",
         devices="auto",
-        precision=precision, 
+        precision=precision,
         gradient_clip_val=1.0,
-        logger=wandb_logger, 
-        callbacks=callbacks, 
+        logger=wandb_logger,
+        callbacks=callbacks,
         log_every_n_steps=1,
     )
 
@@ -227,7 +243,6 @@ def run_fold(
 
     wandb.finish()
     return results
-    # return trainer
 
 
 # ---------------------- Main ---------------------
@@ -257,7 +272,6 @@ def main():
             all_results[campaign] = run_fold(
                 train_df, val_df, test_df, campaign, args, model_cfg
             )
-        # Summary
         print("\n" + "="*50)
         print(f"LOO RESULTS — {args.model.upper()}")
         print("="*50)
@@ -282,7 +296,6 @@ def main():
         save_split_to_metadata(train_df, val_df, test_df, args.metadata_json, "random")
         run_fold(train_df, val_df, test_df, "random", args, model_cfg)
 
-
     print(f"\nCompleted in {(time.time() - start) / 60:.2f} min")
 
 
@@ -295,7 +308,11 @@ def parse_args():
 
     # Data
     p.add_argument("--metadata_json", default="data/full_metadata.json")
-    p.add_argument("--pretrained",    default=None)
+    p.add_argument("--pretrained",    default=None,
+                   help="Generator (or single-model) pretrained checkpoint path")
+    # ── RealESRGAN only — ignored silently for all other models ──────── #
+    p.add_argument("--pretrained_d",  default=None,
+                   help="Discriminator pretrained checkpoint path (real_esrgan only)")
 
     # Split strategy — mutually exclusive
     split_group = p.add_mutually_exclusive_group(required=True)

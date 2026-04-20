@@ -1,35 +1,24 @@
 """
 hat.py — HAT Lightning module for TIR super-resolution (x4).
-
-Mirrors swinir.py exactly in structure:
-  - basicsr arch import (with fallback to XPixelGroup GitHub)
-  - Freeze/unfreeze backbone support
-  - Gradient loss (lambda_grad)
-  - Identical logging surface: loss, recon_loss, grad_loss, psnr, ssim, mae
-  - Same configure_optimizers pattern (backbone vs head param groups)
-  - Compatible with the same train.py used for SwinIR
+Based on the HAT architecture from XPixelGroup/HAT, with a PyTorch Lightning wrapper for training and evaluation.
 """
 
 import os
 import sys
 import types
+import requests  # noqa: PLC0415
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import lightning.pytorch as pl
-from kornia.filters import SpatialGradient
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 
-# --------------------------------------------------------------------------- #
-#  Arch import — prefer basicsr; fall back to fetching from XPixelGroup/HAT   #
-# --------------------------------------------------------------------------- #
+from scripts.utils.loss import gradient_loss
+
+# ----------------- Arch import ---------------  
 def _load_hat_arch():
-    """
-    Try basicsr first (available when the XPixelGroup basicsr fork is installed).
-    If that fails, dynamically fetch hat_arch.py from GitHub — same pattern as
-    the original HATLightning, but cached in sys.modules so it only runs once.
-    """
+    """Load the HAT architecture, either from basicsr or GitHub."""
     try:
         from basicsr.archs import hat_arch as _hat_arch
         print("[INFO] HAT arch loaded from basicsr.archs")
@@ -41,7 +30,7 @@ def _load_hat_arch():
         return sys.modules["hat_arch"]
 
     print("[INFO] basicsr HAT not found — fetching hat_arch from XPixelGroup/HAT on GitHub...")
-    import requests  # noqa: PLC0415
+
     _HAT_URL = (
         "https://raw.githubusercontent.com/XPixelGroup/HAT/main/hat/archs/hat_arch.py"
     )
@@ -57,56 +46,11 @@ def _load_hat_arch():
 _hat_arch = _load_hat_arch()
 HAT = _hat_arch.HAT  # The top-level HAT class (upscale, in_chans, img_size, …)
 
-# --------------------------------------------------------------------------- #
-#  Gradient loss (identical to swinir.py)                                     #
-# --------------------------------------------------------------------------- #
-_spatial_gradient = SpatialGradient()
 
-
-def gradient_loss(
-    sr: torch.Tensor, hr: torch.Tensor, mask: torch.Tensor
-) -> torch.Tensor:
-    """Spatial temperature gradient loss. Only valid (masked) pixels contribute."""
-    sr_grads = _spatial_gradient(sr)  # (B, 1, 2, H, W)
-    hr_grads = _spatial_gradient(hr)
-
-    # Erode mask by 1px to avoid border artefacts
-    mask_inner = (
-        F.avg_pool2d(mask, kernel_size=3, stride=1, padding=1) > 0.99
-    ).float()
-    mask_5d = mask_inner.unsqueeze(2).expand_as(sr_grads)
-
-    n = torch.clamp(mask_5d.sum(), min=1.0)
-    return (torch.abs(sr_grads - hr_grads) * mask_5d).sum() / n
-
-
-# --------------------------------------------------------------------------- #
-#  HATModule                                                                   #
-# --------------------------------------------------------------------------- #
+#  --------------- model def ------------------                                                              
 class HATModule(pl.LightningModule):
     """
     Lightning wrapper for HAT super-resolution.
-
-    Config YAML keys (mirrors swinir config where possible):
-        model_class:     HATModule
-        img_size:        64          # LR patch size fed to the network
-        window_size:     16
-        embed_dim:       180
-        depths:          [6,6,6,6,6,6]
-        num_heads:       [6,6,6,6,6,6]
-        mlp_ratio:       2.0
-        compress_ratio:  3
-        squeeze_factor:  30
-        overlap_ratio:   0.5
-        pretrained_path: null
-        mean:            0.0
-        std:             1.0
-        learning_rate:   1e-4
-        bb_lr_scale:     0.1
-        patience:        5
-        freeze_backbone: false
-        lambda_grad:     0.1
-        data_range:      80.0
     """
 
     # Head layer names used to split backbone vs head param groups
@@ -166,7 +110,7 @@ class HATModule(pl.LightningModule):
         if pretrained_path and os.path.exists(pretrained_path):
             self._load_pretrained(pretrained_path)
         else:
-            print("[INFO] No pretrained weights — training from scratch")
+            print("[INFO] No pretrained weights; training from scratch")
 
         # Now replace the very last Conv2d with a 1-ch equivalent
         self._replaced_conv_name = self._replace_last_conv(out_channels=1)
@@ -209,7 +153,7 @@ class HATModule(pl.LightningModule):
         setattr(parent, parts[-1], new_conv)
         print(
             f"[INFO] Replaced {last_conv_name}: "
-            f"{old_conv.out_channels}ch → {out_channels}ch"
+            f"{old_conv.out_channels}ch to {out_channels}ch"
         )
         return last_conv_name
 

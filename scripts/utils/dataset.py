@@ -171,7 +171,7 @@ class Compose:
 # ------------- Dataset -----------------------------
 class SRDataset(Dataset):
     def __init__(self, metadata, mean=None, std=None, 
-                 patch_size=64, scale=4, transforms=None, 
+                 patch_size=48, scale=4, transforms=None, 
                  is_train=True):
         self.samples = metadata.reset_index(drop=True)
         self.mean = mean
