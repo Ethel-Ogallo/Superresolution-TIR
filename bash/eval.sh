@@ -18,11 +18,23 @@ cd /share/castor/home/e2406751/Superresolution-TIR
 # Run evaluation 
 python -m scripts.evaluation.evaluate \
     --model       edsr \
-    --checkpoint   "wandb:ogalloethel-university-of-south-brittany/TIR_sisr/model-mwqw8evc:best" \
+    --checkpoint   "wandb:ogalloethel-university-of-south-brittany/TIR_sisr/model-nt00luho:best" \
     --metadata_json data/full_metadata.json \
     --split        test \
+    --random_split \
     --output_dir   results/SR_images/ \
     --num_workers  2 \
     --project      TIR_sisr \
-    --run_name     eval_full_PDR \
-    --group        campaign_splits
+    --run_name     eval_v2 \
+    --group        rand_patch_split
+
+# python -m scripts.evaluation.evaluate \
+#     --model         edsr \
+#     --checkpoint    "wandb:ogalloethel-university-of-south-brittany/TIR_sisr/model-nt00luho:best" \
+#     --metadata_json data/full_metadata.json \
+#     --loo_fold      PDR \
+#     --output_dir    results/SR_images/ \
+#     --num_workers   2 \
+#     --project       TIR_sisr \
+#     --run_name      eval_PDR_v2 \
+#     --group         LOO_benchmark

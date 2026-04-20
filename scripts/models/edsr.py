@@ -22,10 +22,10 @@ from basicsr.archs import edsr_arch
 from kornia.filters import SpatialGradient
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 
-#TODO: look into LPIPS metric
+#TODO: look into LPIPS metric. Read more on this
 
 # ----------Gradient loss ---------------
-_spatial_gradient = SpatialGradient()  # shared instance, no re-init overhead
+_spatial_gradient = SpatialGradient()  
 
 def gradient_loss(sr: torch.Tensor, hr: torch.Tensor,
                   mask: torch.Tensor) -> torch.Tensor:
@@ -53,24 +53,34 @@ def gradient_loss(sr: torch.Tensor, hr: torch.Tensor,
 
 class EDSRModule(pl.LightningModule):
 #TODO: include patching logic in the model instead of dataset, to avoid edge artifacts in metrics and allow variable-size inputs.
-    # DATA_RANGE = 60.0   # °C — used by PSNR / SSIM  ?? Should this be based on train data stats instead of a fixed value?
+    # DEFAULT_DATA_RANGE = 60.0   # °C — fallback if train-fold robust range is not provided
 
     def __init__(
         self,
         pretrained_path:   str   = None,
         mean:              float = 0.0,
         std:               float = 1.0,
-        data_range: float = 1.0,
         learning_rate:     float = 1e-4,
-        bb_lr_scale: float = 0.1,
+        bb_lr_scale:       float = 0.1,
         patience:          int   = 5,
         n_feats:           int   = 64,
         n_blocks:          int   = 16,
         freeze_backbone:   bool  = True,
-        lambda_grad:       float = 0.1,   
+        lambda_grad:       float = 0.1,
+        # ── FIX: data_range is now a proper param instead of hardcoded ──
+        # For Rhône corridor TIR data (°C): river ~10-20°C, asphalt/roofs up to ~55-60°C
+        # Set this from your dataset global min/max: data_range = T_max - T_min
+        # Run the debug print below once to confirm the real span.
+        data_range: float = 70.0,
     ):
         super().__init__()
         self.save_hyperparameters()
+        # ── FIX: DATA_RANGE now comes from the param, not hardcoded ──
+        # Old code had self.DATA_RANGE = 80.0 which was wrong for a river corridor.
+        # Realistic TIR range for Rhône (water + asphalt + roofs) is ~50°C.
+        # Override by passing data_range=X to the constructor or your config yaml.
+        self.DATA_RANGE = float(data_range)
+        print(f"[INFO] DATA_RANGE set to {self.DATA_RANGE}°C ")
 
         # Backbone: 3-ch in, 1-ch out 
         self.body = edsr_arch.EDSR(
@@ -95,18 +105,16 @@ class EDSRModule(pl.LightningModule):
 
         self._set_backbone_frozen(freeze_backbone)
 
-        # Metrics
+        # Metrics initialized without data range since we denormalize before computing them??
         for split in ("train", "val", "test"):
-            setattr(self, f"{split}_psnr",
-                    PeakSignalNoiseRatio(data_range=self.hparams.data_range))
-            setattr(self, f"{split}_ssim",
-                    StructuralSimilarityIndexMeasure(data_range=self.hparams.data_range))
+            setattr(self, f"{split}_psnr", PeakSignalNoiseRatio(data_range=self.DATA_RANGE))
+            setattr(self, f"{split}_ssim", StructuralSimilarityIndexMeasure(data_range=self.DATA_RANGE))
 
     # ------- Helpers -------------
     def denormalize(self, t: torch.Tensor) -> torch.Tensor:
         mean = torch.tensor(self.hparams.mean, device=t.device)
         std  = torch.tensor(self.hparams.std,  device=t.device)
-        return t * std + mean
+        return t * std + mean 
 
     @staticmethod
     def crop_to_valid_bbox(tensor: torch.Tensor, mask: torch.Tensor):
@@ -161,6 +169,8 @@ class EDSRModule(pl.LightningModule):
                 or ("conv_last" in name)
                 or ("upsample"  in name)
             )
+            if param.requires_grad:
+                print(name)
 
     # Forward 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -170,37 +180,80 @@ class EDSRModule(pl.LightningModule):
 
     # -------------------- Shared step --------------------
     def _shared_step(self, batch, stage: str):
-        lr_img, hr_img, hr_mask = batch   # all (B, 1, H, W)
-        sr_img = self(lr_img)             # (B, 1, H*4, W*4)
+        lr_img, hr_img, hr_mask = batch
+        sr_img = self(lr_img)
 
         sr = self.denormalize(sr_img)
         hr = self.denormalize(hr_img)
 
-        # Reconstruction loss (masked L1) 
-        abs_err   = torch.abs(sr - hr) * hr_mask
+        # Reconstruction loss (masked L1)
+        abs_err = torch.abs(sr - hr) * hr_mask
         recon_loss = abs_err.sum() / torch.clamp(hr_mask.sum(), min=1.0)
 
-        # Gradient loss (masked Sobel) 
+        # Gradient loss
         if self.hparams.lambda_grad > 0:
             grad_loss = gradient_loss(sr, hr, hr_mask)
-            loss      = recon_loss + self.hparams.lambda_grad * grad_loss
+            loss = recon_loss + self.hparams.lambda_grad * grad_loss
         else:
             grad_loss = torch.tensor(0.0, device=sr.device)
-            loss      = recon_loss
+            loss = recon_loss
 
-        # Metrics — crop to valid bbox to avoid nodata skewing PSNR/SSIM
+        # METRICS 
         with torch.no_grad():
             sr_crop, mask_crop = self.crop_to_valid_bbox(sr, hr_mask)
-            hr_crop, _         = self.crop_to_valid_bbox(hr, hr_mask)
-            psnr_val = getattr(self, f"{stage}_psnr")(sr_crop * mask_crop,
-                                                       hr_crop * mask_crop)
-            ssim_val = getattr(self, f"{stage}_ssim")(sr_crop, hr_crop)
+            hr_crop, _ = self.crop_to_valid_bbox(hr, hr_mask)
 
-        self.log(f"{stage}_loss",      loss,      on_epoch=True, prog_bar=True)
-        self.log(f"{stage}_recon_loss",recon_loss, on_epoch=True, prog_bar=False)
-        self.log(f"{stage}_grad_loss", grad_loss,  on_epoch=True, prog_bar=False)
-        self.log(f"{stage}_psnr",      psnr_val,  on_epoch=True, prog_bar=True)
-        self.log(f"{stage}_ssim",      ssim_val,  on_epoch=True, prog_bar=True)
+            # FIX : avoid extreme / invalid values affecting SSIM
+            ssr_crop = torch.nan_to_num(sr_crop, nan=0.0, posinf=0.0, neginf=0.0)
+            hr_crop = torch.nan_to_num(hr_crop, nan=0.0, posinf=0.0, neginf=0.0)
+
+            valid = (mask_crop > 0.5)
+
+            if valid.sum() == 0:
+                psnr_val = torch.tensor(0.0, device=sr.device)
+                ssim_val = torch.tensor(0.0, device=sr.device)
+            else:
+                # PSNR (unchanged — correct)
+                sr_valid = sr_crop[valid].unsqueeze(0).unsqueeze(0)
+                hr_valid = hr_crop[valid].unsqueeze(0).unsqueeze(0)
+                psnr_val = getattr(self, f"{stage}_psnr")(sr_valid, hr_valid)
+
+                # SSIM
+                h, w = sr_crop.shape[-2], sr_crop.shape[-1]
+                if min(h, w) < 11:
+                    ssim_val = torch.tensor(0.0, device=sr.device)
+                else:
+                    # ❌ OLD (problematic):
+                    # fill_val = hr_crop[valid].mean()
+                    # sr_for_ssim = torch.where(valid, sr_crop, fill_val)
+                    # hr_for_ssim = torch.where(valid, hr_crop, fill_val)
+
+                    # FIX 2: zero-fill instead of mean (avoids biasing structure)
+                    sr_for_ssim = sr_crop.clone()
+                    hr_for_ssim = hr_crop.clone()
+
+                    sr_for_ssim[~valid] = 0
+                    hr_for_ssim[~valid] = 0
+
+                    # FIX 3: ensure proper shape (B, C, H, W) — usually already OK
+                    # (no change needed unless debugging)
+                    ssim_val = getattr(self, f"{stage}_ssim")(sr_for_ssim, hr_for_ssim)
+
+            if valid.sum() == 0:
+                mae_val = torch.tensor(0.0, device=sr.device)
+            else:
+                err = sr_crop - hr_crop
+                err = err[valid]
+
+                mae_val = err.abs().mean()
+
+        self.log(f"{stage}_loss", loss, on_epoch=True, prog_bar=True)
+        self.log(f"{stage}_recon_loss", recon_loss, on_epoch=True, prog_bar=False)
+        self.log(f"{stage}_grad_loss", grad_loss, on_epoch=True, prog_bar=False)
+        self.log(f"{stage}_psnr", psnr_val, on_epoch=True, prog_bar=True)
+        self.log(f"{stage}_ssim", ssim_val, on_epoch=True, prog_bar=True)
+        self.log(f"{stage}_mae", mae_val, on_epoch=True, prog_bar=True)
+
         return loss
 
     def training_step(self, batch, batch_idx):

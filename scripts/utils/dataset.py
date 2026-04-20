@@ -31,23 +31,41 @@ def compute_mean_std(metadata: pd.DataFrame) -> tuple[float, float]:
     print(f"  Train mean : {mean:.4f} °C  |  std : {std:.4f} °C")
     return float(mean), float(std)
 
-def compute_data_range(metadata):
-    global_min = float("inf")
-    global_max = float("-inf")
-
+def compute_data_range(
+    metadata: pd.DataFrame,
+    low_percentile: float = 1.0,
+    high_percentile: float = 99.0,
+    min_range: float = 1e-6,
+) -> float:
+    """Estimate a robust HR data range from train-only patches using percentiles.
+    Uses 1st-99th percentile to avoid outlier skew from nodata edges or hot pixels.
+    """
+    values = []
     for _, row in metadata.iterrows():
         with rasterio.open(row["hr_path"]) as src:
-            nodata = src.nodata
             hr = src.read(1).astype(np.float32)
+            nodata = src.nodata
+            if nodata is not None:
+                valid = hr[hr != nodata]
+            else:
+                valid = hr[~np.isnan(hr)]
+            if valid.size > 0:
+                values.append(valid)
 
-        valid = hr[hr != nodata] if nodata is not None else hr[~np.isnan(hr)]
-        if len(valid) == 0:
-            continue
+    if not values:
+        raise ValueError("No valid HR pixels found to compute data range.")
 
-        global_min = min(global_min, valid.min())
-        global_max = max(global_max, valid.max())
+    values = np.concatenate(values)
+    low  = np.percentile(values, low_percentile)
+    high = np.percentile(values, high_percentile)
+    data_range = max(float(high - low), float(min_range))
 
-    return float(global_max - global_min)
+    print(
+        f"[INFO] Train data range ({low_percentile:.0f}-{high_percentile:.0f}th percentile): "
+        f"{low:.2f}°C to {high:.2f}°C → range={data_range:.2f}°C"
+    )
+    return data_range
+
 # ------------ Data Augmentations ----------------
 #TODO: utilize kornia or pytorch to do the augmentations
 
@@ -96,14 +114,14 @@ class ThermalShift:
     Global diurnal shift applied to both (physically consistent).
     Optional inter-sensor bias applied to LR only. ??sensor bias??
     """
-    def __init__(self, range_c=2.0):  #sensor_bias_range=0.5
+    def __init__(self, range_c=1.0):  #sensor_bias_range=0.5
         self.range_c = range_c
         # self.sensor_bias = sensor_bias_range
 
     def __call__(self, lr, hr, mask):
         shift = random.uniform(-self.range_c, self.range_c)
         # bias = random.uniform(-self.sensor_bias, self.sensor_bias)
-        return lr + shift , hr + shift, mask  #+ bias
+        return lr + shift , hr + shift , mask  #+ bias
 
 
 class ContrastScaling:
@@ -177,10 +195,14 @@ class SRDataset(Dataset):
             nodata_hr = src.nodata
 
         # 1. Handle Nodata/NaN early
-        hr_mask = (hr != nodata_hr).astype(np.float32) if nodata_hr is not None else (~np.isnan(hr)).astype(np.float32)
+        # hr_mask = (hr != nodata_hr).astype(np.float32) if nodata_hr is not None else (~np.isnan(hr)).astype(np.float32)
         fill = float(self.mean) if self.mean is not None else 0.0
-        hr = np.nan_to_num(hr, nan=fill) if nodata_hr is None else np.where(hr == nodata_hr, fill, hr)
-        lr = np.nan_to_num(lr, nan=fill) if nodata_lr is None else np.where(lr == nodata_lr, fill, lr)
+        # hr = np.nan_to_num(hr, nan=fill) if nodata_hr is None else np.where(hr == nodata_hr, fill, hr)
+        # lr = np.nan_to_num(lr, nan=fill) if nodata_lr is None else np.where(lr == nodata_lr, fill, lr)
+
+        hr_mask = (hr != np.float32(nodata_hr)).astype(np.float32) if nodata_hr is not None else (~np.isnan(hr)).astype(np.float32)
+        lr = np.nan_to_num(lr, nan=fill) if nodata_lr is None else np.where(lr == np.float32(nodata_lr), fill, lr)
+        hr = np.nan_to_num(hr, nan=fill) if nodata_hr is None else np.where(hr == np.float32(nodata_hr), fill, hr)
 
         # Patch Extraction (Only if Training)
         if self.is_train:
@@ -211,6 +233,10 @@ class SRDataset(Dataset):
         if self.mean is not None and self.std is not None:
             lr_t = (lr_t - self.mean) / self.std
             hr_t = (hr_t - self.mean) / self.std
+            # ADD THIS SHIFT: Move the mean from 0.0 to 3.0  <<<<<<<<<
+            # This makes 99% of your pixels positive numbers.
+            # lr_t += 3.0
+            # hr_t += 3.0
 
         return lr_t, hr_t, mask_t
 

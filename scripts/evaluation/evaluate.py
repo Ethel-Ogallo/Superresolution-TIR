@@ -22,6 +22,7 @@ import wandb
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 
 from scripts.utils.dataset import SRDataset
+from scripts.training.train import campaign_split, random_split, _derive_campaign_id
 
 
 # -------------------- Model loading -------------------------------
@@ -74,10 +75,10 @@ def load_model(ckpt_path: str, device: torch.device, model_name: str = "edsr"):
 
 # ----------------- Patch-level metrics -------------------------------
 @torch.no_grad()
-def evaluate_patches(model, ds: SRDataset, device: torch.device) -> list[dict]:
+def evaluate_patches(model, ds: SRDataset, device: torch.device, data_range: float) -> list[dict]:
     """PSNR, SSIM, MAE per patch."""
-    psnr_fn = PeakSignalNoiseRatio(data_range=model.DATA_RANGE).to(device)
-    ssim_fn = StructuralSimilarityIndexMeasure(data_range=model.DATA_RANGE).to(device)
+    psnr_fn = PeakSignalNoiseRatio(data_range=data_range).to(device)
+    ssim_fn = StructuralSimilarityIndexMeasure(data_range=data_range).to(device)
     records = []
 
     for i in range(len(ds)):
@@ -95,6 +96,7 @@ def evaluate_patches(model, ds: SRDataset, device: torch.device) -> list[dict]:
 
         psnr = psnr_fn(sr_crop * mask_crop, hr_crop * mask_crop).item()
         ssim = ssim_fn(sr_crop, hr_crop).item()
+
         mae  = float((torch.abs(sr - hr) * mask_t).sum() /
                      torch.clamp(mask_t.sum(), min=1.0))
 
@@ -117,6 +119,7 @@ def evaluate_scenes(
     output_dir:    str,
     hr_patch_size: int,
     device:        torch.device,
+    data_range:    float,
 ) -> list[dict]:
     """
     For each hr_image_id in metadata:
@@ -126,10 +129,6 @@ def evaluate_scenes(
       3. Compute global MAE / PSNR / SSIM on the reassembled pair
       4. Save SR GeoTIFF to output_dir
     """
-    psnr_fn = PeakSignalNoiseRatio(data_range=model.DATA_RANGE).to(device)
-    ssim_fn = StructuralSimilarityIndexMeasure(
-        data_range=model.DATA_RANGE, kernel_size=11
-    ).to(device)
     os.makedirs(output_dir, exist_ok=True)
     scene_records = []
 
@@ -238,9 +237,14 @@ def evaluate_scenes(
         print(f"[INFO] Saved SR: {out_tif}")
         print(f"[INFO] Saved HR: {hr_out_tif}")
 
-        # ── Global metrics on reassembled pair ──────────────────────────────
+        # ---------- Global metrics on reassembled pair -----------------
         sr_valid = sr_canvas[valid].astype(np.float32)
         hr_valid = hr_canvas[valid].astype(np.float32)
+
+        # metrics
+        psnr_fn = PeakSignalNoiseRatio(data_range=data_range).to(device)
+        ssim_fn = StructuralSimilarityIndexMeasure(data_range=data_range,
+                                                   kernel_size=11).to(device)
 
         global_mae  = float(np.abs(sr_valid - hr_valid).mean())
         global_rmse = float(np.sqrt(((sr_valid - hr_valid) ** 2).mean()))
@@ -300,36 +304,58 @@ def main():
     run_name = args.run_name or f"eval_{args.split}"
     wandb.init(project=args.project, name=run_name, group=args.group)
 
-    # -Load metadata (JSON) 
     with open(args.metadata_json) as f:
-        all_meta = json.load(f)
-    metadata = pd.DataFrame(all_meta)
-    subset   = metadata[metadata["split"] == args.split].reset_index(drop=True)
+        metadata = pd.DataFrame(json.load(f))
 
-    # Audit: confirm no train campaigns leaked into this split
-    if "campaign_id" not in subset.columns:
-        subset["campaign_id"] = subset["patch_id"].str.split("_").str[0]
+    if "campaign_id" not in metadata.columns:
+        metadata["campaign_id"] = metadata.apply(_derive_campaign_id, axis=1)
 
-    train_campaigns = set(metadata[metadata["split"] == "train"]["campaign_id"].unique())
-    test_campaigns  = set(subset["campaign_id"].unique())
-    leaked = train_campaigns & test_campaigns
+    # --- Determine split strategy and build subset ---
+    if args.loo_fold:
+        # LOO: reconstruct this fold's test set on the fly
+        print(f"[INFO] LOO mode — evaluating fold: {args.loo_fold}")
+        _, _, subset = campaign_split(metadata, args.loo_fold)
+        subset = subset.reset_index(drop=True)
+        split_strategy = "loo"
 
-    if leaked:
-        raise RuntimeError(
-            f"[LEAKAGE] Campaigns appear in both train and {args.split}: {leaked}"
-        )
+    elif args.random_split:
+        # Random: use metadata split column, skip leakage check
+        print(f"[INFO] Random split mode")
+        subset = metadata[metadata["split"] == args.split].reset_index(drop=True)
+        split_strategy = "random"
 
-    print(f"[INFO] Campaigns in '{args.split}' split: {sorted(test_campaigns)}")
-    print(f"[INFO] {len(subset)} patches in '{args.split}' split "
-          f"across {subset['hr_image_id'].nunique()} scene(s)")
+    else:
+        # Campaign: use metadata split column, run leakage check
+        subset = metadata[metadata["split"] == args.split].reset_index(drop=True)
+        split_strategy = metadata["split_strategy"].iloc[0] if "split_strategy" in metadata.columns else "campaign"
 
+        train_campaigns = set(metadata[metadata["split"] == "train"]["campaign_id"].unique())
+        test_campaigns  = set(subset["campaign_id"].unique())
+        leaked = train_campaigns & test_campaigns
+        if leaked:
+            raise RuntimeError(
+                f"[LEAKAGE] Campaigns appear in both train and {args.split}: {leaked}"
+            )
+
+    test_campaigns = set(subset["campaign_id"].unique())
+    print(f"[INFO] Strategy: {split_strategy}")
+    print(f"[INFO] Campaigns in eval set: {sorted(test_campaigns)}")
+    print(f"[INFO] {len(subset)} patches across {subset['hr_image_id'].nunique()} scene(s)")
+
+    
     # Model 
     model = load_model(args.checkpoint, device, model_name=args.model)
+    ckpt_data_range = getattr(getattr(model, "hparams", object()), "data_range", None)
+    default_data_range = getattr(model, "DATA_RANGE", 60.0)
+    data_range = float(args.data_range) if args.data_range is not None else float(
+        ckpt_data_range if ckpt_data_range is not None else default_data_range
+    )
+    print(f"[INFO] Using data_range: {data_range:.4f} °C")
 
     # ----------------- Patch-level evaluation -------------------------------
     patch_size = args.lr_patch_size
     ds = SRDataset(subset, mean=model.hparams.mean, std=model.hparams.std, patch_size=patch_size, is_train=False)
-    patch_records = evaluate_patches(model, ds, device)
+    patch_records = evaluate_patches(model, ds, device, data_range)
 
     psnr_vals = [r["psnr"]        for r in patch_records]
     ssim_vals = [r["ssim"]        for r in patch_records]
@@ -363,6 +389,7 @@ def main():
         output_dir    = args.output_dir or "results/SR_images",
         hr_patch_size = args.hr_patch_size,
         device        = device,
+        data_range    = data_range,
     )
 
     if scene_records:
@@ -425,12 +452,22 @@ def parse_args():
     p.add_argument("--checkpoint",    required=True,
                    help="Local .ckpt or 'wandb:entity/project/model-ID:best'")
     p.add_argument("--metadata_json", default="data/full_metadata.json")
-    p.add_argument("--split",         default="test", choices=["train", "val", "test"])
+    p.add_argument("--split", default="test", choices=["train", "val", "test"],
+               help="Split to evaluate (ignored when --loo_fold is set)")
+
+    eval_group = p.add_mutually_exclusive_group(required=False)
+    eval_group.add_argument("--loo_fold", default=None,
+                            help="LOO mode: campaign name to evaluate e.g. BCR_2022")
+    eval_group.add_argument("--random_split", action="store_true",
+                            help="Random split mode: use metadata split column, skip leakage check")
+  
     p.add_argument("--output_dir",    default=None,
                    help="Where to save SR + HR reassembled GeoTIFFs")
     p.add_argument("--hr_patch_size", type=int, default=512)
     p.add_argument("--lr_patch_size", type=int, default=48,
                help="LR patch size used during training (HR = lr * scale)")
+    p.add_argument("--data_range", type=float, default=None,
+               help="Optional override for PSNR/SSIM data range in °C")
     p.add_argument("--num_workers",   type=int, default=2)
     p.add_argument("--project",       default="TIR_sisr")
     p.add_argument("--group",         default=None)

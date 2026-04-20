@@ -16,23 +16,41 @@ cd /share/castor/home/e2406751/Superresolution-TIR
 mkdir -p results/logs/edsr
 
 # -------- Run training --------
+# python -m scripts.training.train \
+#     --model edsr \
+#     --metadata_json data/full_metadata.json \
+#     --pretrained /share/home/e2406751/Superresolution-TIR/data/pretrained/EDSR_baseline_x4.pth \
+#     --random_split \
+#     --lr 1e-4 \
+#     --lambda_grad 0.1 \
+#     --bb_lr_scale 0.1 \
+#     --max_epochs 100 \
+#     --patience 30 \
+#     --batch_size 2  \
+#     --num_workers 2 \
+#     --run_name experiment1_v3 \
+#     --group prelim \
+#     --project TIR_sisr 
+#     # --freeze_backbone 
 python -m scripts.training.train \
-    --model edsr \
+    --model swinir \
     --metadata_json data/full_metadata.json \
-    --pretrained /share/home/e2406751/Superresolution-TIR/data/pretrained/EDSR_baseline_x4.pth \
-    --loo \
+    --pretrained /share/home/e2406751/Superresolution-TIR/data/pretrained/SwinIR_Large_x4.pth \
+    --random_split \
     --lr 1e-4 \
-    --lambda_grad 0.5 \
+    --lambda_grad 0.1 \
     --bb_lr_scale 0.1 \
     --max_epochs 100 \
     --patience 30 \
-    --batch_size 4 \
+    --batch_size 2 \
     --num_workers 2 \
-    --run_name EDSR_frozen \
-    --group LOO_benchmark \
-    --project TIR_sisr \
-    --freeze_backbone 
+    --run_name experiment2_full \
+    --group prelim \
+    --project TIR_sisr 
+    # --freeze_backbone
 
+# EDSR: /share/home/e2406751/Superresolution-TIR/data/pretrained/EDSR_baseline_x4.pth
+# SwinIR: /share/home/e2406751/Superresolution-TIR/data/pretrained/SwinIR_Large_x4.pth
 
 # ===============================
 # SLURM + BATCH SIZE GUIDELINES
