@@ -9,25 +9,9 @@ import torch.nn.functional as F
 import torch.optim as optim
 import lightning.pytorch as pl
 from basicsr.archs import swinir_arch
-from kornia.filters import SpatialGradient
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 
-# ---------- Gradient loss ---------------
-_spatial_gradient = SpatialGradient()
-
-def gradient_loss(sr: torch.Tensor, hr: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    """Spatial temperature gradient loss. Only valid pixels contribute."""
-    sr_grads = _spatial_gradient(sr)  # (B, 1, 2, H, W)
-    hr_grads = _spatial_gradient(hr)
-    
-    # Erode mask by 1px to avoid border artifacts
-    mask_inner = (F.avg_pool2d(mask, kernel_size=3, stride=1, padding=1) > 0.99).float()
-    mask_5d = mask_inner.unsqueeze(2).expand_as(sr_grads)
-    
-    n = torch.clamp(mask_5d.sum(), min=1.0)
-    loss = (torch.abs(sr_grads - hr_grads) * mask_5d).sum() / n
-    return loss
-
+from scripts.utils.loss import gradient_loss
 
 class SwinIRModule(pl.LightningModule):
 

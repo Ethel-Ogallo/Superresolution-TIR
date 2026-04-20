@@ -1,15 +1,6 @@
 """
 edsr.py — EDSR Lightning module for TIR super-resolution (x4).
 
-Data flow:
-  dataset  - (1, H, W)  -  repeat(1,3,1,1)  -  EDSR backbone  -  (1, H*4, W*4)
-
-Loss:
-  L_total = L1(SR, HR) + lambda_grad * GradientLoss(SR, HR)
-
-  GradientLoss uses kornia.filters.SpatialGradient to compute spatial
-  temperature gradients (rate of change between pixels in x and y).
-  Only valid (non-nodata) pixels contribute to both terms.
 """
 
 import os
@@ -19,38 +10,12 @@ import torch.nn.functional as F
 import torch.optim as optim
 import lightning.pytorch as pl
 from basicsr.archs import edsr_arch
-from kornia.filters import SpatialGradient
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 
-#TODO: look into LPIPS metric. Read more on this
-
-# ----------Gradient loss ---------------
-_spatial_gradient = SpatialGradient()  
-
-def gradient_loss(sr: torch.Tensor, hr: torch.Tensor,
-                  mask: torch.Tensor) -> torch.Tensor:
-    """
-    Spatial temperature gradient loss.
-    Uses kornia.filters.SpatialGradient - output shape (B, 1, 2, H, W)
-    where dim 2 is (x_gradient, y_gradient).
-    Only valid (non-nodata) pixels contribute.
-
-    sr, hr, mask : (B, 1, H, W) — in physical units (°C)
-    """
-    sr_grads = _spatial_gradient(sr)   # (B, 1, 2, H, W)
-    hr_grads = _spatial_gradient(hr)   # (B, 1, 2, H, W)
-
-    # Erode mask by 1px — border pixels produce artificial gradients at nodata edges
-    mask_inner = (F.avg_pool2d(mask, kernel_size=3, stride=1, padding=1) > 0.99).float()
-    mask_5d    = mask_inner.unsqueeze(2).expand_as(sr_grads)   # (B, 1, 2, H, W)
-
-    n    = torch.clamp(mask_5d.sum(), min=1.0)
-    loss = (torch.abs(sr_grads - hr_grads) * mask_5d).sum() / n
-    return loss
+from scripts.utils.loss import gradient_loss
 
 
 # ------------------- Model ----------------------------
-
 class EDSRModule(pl.LightningModule):
 #TODO: include patching logic in the model instead of dataset, to avoid edge artifacts in metrics and allow variable-size inputs.
     # DEFAULT_DATA_RANGE = 60.0   # °C — fallback if train-fold robust range is not provided
