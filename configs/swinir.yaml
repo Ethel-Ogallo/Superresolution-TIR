@@ -1,3 +1,4 @@
+# swinir.yaml
 model_class: SwinIRModule
 img_size: 64
 window_size: 8
@@ -6,3 +7,4 @@ depths: [6, 6, 6, 6, 6, 6]
 num_heads: [6, 6, 6, 6, 6, 6]
 mlp_ratio: 2.0
 upsampler: pixelshuffle
+precision: "bf16-mixed"    # SwinIR Large overflows fp16 — bf16 required

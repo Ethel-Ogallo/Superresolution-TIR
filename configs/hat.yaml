@@ -8,3 +8,4 @@ mlp_ratio: 2.0
 compress_ratio: 3
 squeeze_factor: 30
 overlap_ratio: 0.5
+precision: "bf16-mixed" 
