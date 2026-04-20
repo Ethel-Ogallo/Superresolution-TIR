@@ -171,7 +171,7 @@ class Compose:
 # ------------- Dataset -----------------------------
 class SRDataset(Dataset):
     def __init__(self, metadata, mean=None, std=None, 
-                 patch_size=48, scale=4, transforms=None, 
+                 patch_size=64, scale=4, transforms=None, 
                  is_train=True):
         self.samples = metadata.reset_index(drop=True)
         self.mean = mean
@@ -194,11 +194,8 @@ class SRDataset(Dataset):
             hr = src.read(1).astype(np.float32)
             nodata_hr = src.nodata
 
-        # 1. Handle Nodata/NaN early
-        # hr_mask = (hr != nodata_hr).astype(np.float32) if nodata_hr is not None else (~np.isnan(hr)).astype(np.float32)
+        # Handle Nodata/NaN 
         fill = float(self.mean) if self.mean is not None else 0.0
-        # hr = np.nan_to_num(hr, nan=fill) if nodata_hr is None else np.where(hr == nodata_hr, fill, hr)
-        # lr = np.nan_to_num(lr, nan=fill) if nodata_lr is None else np.where(lr == nodata_lr, fill, lr)
 
         hr_mask = (hr != np.float32(nodata_hr)).astype(np.float32) if nodata_hr is not None else (~np.isnan(hr)).astype(np.float32)
         lr = np.nan_to_num(lr, nan=fill) if nodata_lr is None else np.where(lr == np.float32(nodata_lr), fill, lr)
@@ -233,10 +230,6 @@ class SRDataset(Dataset):
         if self.mean is not None and self.std is not None:
             lr_t = (lr_t - self.mean) / self.std
             hr_t = (hr_t - self.mean) / self.std
-            # ADD THIS SHIFT: Move the mean from 0.0 to 3.0  <<<<<<<<<
-            # This makes 99% of your pixels positive numbers.
-            # lr_t += 3.0
-            # hr_t += 3.0
 
         return lr_t, hr_t, mask_t
 
