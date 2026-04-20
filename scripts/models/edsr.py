@@ -169,8 +169,8 @@ class EDSRModule(pl.LightningModule):
                 or ("conv_last" in name)
                 or ("upsample"  in name)
             )
-            if param.requires_grad:
-                print(name)
+            # if param.requires_grad:
+            #     print(name)
 
     # Forward 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

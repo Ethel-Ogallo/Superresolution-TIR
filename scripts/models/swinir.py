@@ -48,26 +48,18 @@ class SwinIRModule(pl.LightningModule):
         upsampler: str = "pixelshuffle",
         freeze_backbone: bool = False,
         lambda_grad: float = 0.1,
-        # ── FIX: data_range is now a proper param instead of hardcoded ──
-        # For Rhône corridor TIR data (°C): river ~10-20°C, asphalt/roofs up to ~55-60°C
-        # Set this from your dataset global min/max: data_range = T_max - T_min
-        # Run the debug print below once to confirm the real span.
-        data_range: float = 80.0,
+        data_range: float = 80.0, 
     ):
         super().__init__()
         self.save_hyperparameters()
 
-        # ── FIX: DATA_RANGE now comes from the param, not hardcoded ──
-        # Old code had self.DATA_RANGE = 80.0 which was wrong for a river corridor.
-        # Realistic TIR range for Rhône (water + asphalt + roofs) is ~50°C.
-        # Override by passing data_range=X to the constructor or your config yaml.
         self.DATA_RANGE = float(data_range)
         print(f"[INFO] DATA_RANGE set to {self.DATA_RANGE}°C ")
 
         depths = depths or [6, 6, 6, 6]
         num_heads = num_heads or [6, 6, 6, 6]
 
-        # Create the backbone (still creates with 3ch out by default)
+        # Create the backbone SwinIR model with the specified config
         self.body = swinir_arch.SwinIR(
             upscale=4,
             in_chans=3,
@@ -82,7 +74,7 @@ class SwinIRModule(pl.LightningModule):
             resi_connection="1conv",
         )
 
-        # === THE FOOLPROOF OUTPUT CHANNEL FIX ===
+        # Output channel
         def replace_last_conv(model, out_channels=1):
             last_conv_name = None
 
@@ -122,8 +114,6 @@ class SwinIRModule(pl.LightningModule):
 
         self._set_backbone_frozen(freeze_backbone)
 
-        # ── FIX: pass the correct DATA_RANGE to both PSNR and SSIM metrics ──
-        # Old code had these hardcoded to 80.0 inside the metric constructors.
         for split in ("train", "val", "test"):
             setattr(self, f"{split}_psnr", PeakSignalNoiseRatio(data_range=self.DATA_RANGE))
             setattr(self, f"{split}_ssim", StructuralSimilarityIndexMeasure(data_range=self.DATA_RANGE))
@@ -181,15 +171,6 @@ class SwinIRModule(pl.LightningModule):
                 param.requires_grad = True
 
     # ------------------- Forward -------------------
-    # def forward(self, x: torch.Tensor) -> torch.Tensor:
-    #     x = x.repeat(1, 3, 1, 1)
-    #     sr = self.body(x)
-
-    #     if sr.shape[1] != 1:
-    #         sr = sr[:, :1, :, :]
-            
-    #     return sr
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x3 = x.repeat(1, 3, 1, 1)
         sr = self.body(x3)
@@ -237,27 +218,14 @@ class SwinIRModule(pl.LightningModule):
                 ssim_val = torch.tensor(0.0, device=sr.device)
                 mae_val  = torch.tensor(0.0, device=sr.device)
             else:
-                # ── MAE: mean absolute error over valid pixels only ──
-                # NOTE: this will equal recon_loss when lambda_grad=0 because
-                # recon_loss is also a masked MAE. Kept separately for clarity.
                 mae_val = (sr_crop - hr_crop).abs()[valid_mask].mean()
 
-                # ── FIX: PSNR needs a proper 4D (B, C, H, W) tensor ──
-                # Old code did sr_crop[valid_mask] which flattened to 1D,
-                # then unsqueezed to (1, 1, N) — torchmetrics silently
-                # computed on the wrong shape giving garbage PSNR (~8 dB).
-                # Fix: keep 4D shape and neutralize invalid pixels by setting
-                # sr == hr there (zero error contribution, doesn't bias metric).
                 sr_for_metric = sr_crop.clone()
                 hr_for_metric = hr_crop.clone()
                 sr_for_metric[~valid_mask] = hr_for_metric[~valid_mask]
 
                 psnr_val = getattr(self, f"{stage}_psnr")(sr_for_metric, hr_for_metric)
 
-                # ── FIX: SSIM also uses the neutralized 4D tensors ──
-                # Old code zero-filled invalid pixels which created sharp artificial
-                # edges at mask boundaries, corrupting local window computations.
-                # Neutralizing (sr=hr at invalid pixels) avoids this.
                 h, w = sr_crop.shape[-2:]
                 if h < 11 or w < 11:
                     # SSIM window is 11x11 — skip if crop is too small
