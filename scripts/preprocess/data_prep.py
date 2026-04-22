@@ -52,11 +52,18 @@ def extract_bit(arr, bit):
     """Return boolean mask for a bit position in QA raster."""
     return ((arr.astype(np.uint16) >> bit) & 1) == 1
 
+# def get_hr_name(path):
+#     parts = os.path.basename(path).replace(".tif", "").split("_")
+#     return f"{parts[0]}_{parts[1]}"  # e.g. "PDR_2013"
 def get_hr_name(path):
-    """Create compact scene id from HR filename."""
-    base = os.path.basename(path)
-    parts = base.split("-")
-    return f"{parts[0]}_{parts[1][:4]}"
+    base = os.path.basename(path).replace(".tif", "")
+    # normalize separators, drop TEMP suffix
+    base = base.replace("-", "_").upper()
+    parts = base.split("_")
+    # keep only SITE + YEAR e.g. DZM_2013
+    site = parts[0]
+    year = next((p for p in parts if re.match(r"(19|20)\d{2}$", p)), "UNKNOWN")
+    return f"{site}_{year}"
 
 def clip_to_hr(input_path, hr_path, output_path):
     """Clip raster to HR footprint + buffer."""
@@ -313,30 +320,6 @@ def build_scene_pairs(hr_files, ls_tars, pairs_json=None):
         )
     return list(zip(hr_files, ls_tars))
 
-    # Automatic matching by shared date token when filenames differ.
-    ls_by_date = {}
-    for ls in ls_tars:
-        d = extract_date_token(ls)
-        if d:
-            ls_by_date.setdefault(d, []).append(ls)
-
-    auto_pairs = []
-    for hr in hr_files:
-        d = extract_date_token(hr)
-        if d and d in ls_by_date and len(ls_by_date[d]) == 1:
-            auto_pairs.append((hr, ls_by_date[d][0]))
-
-    if len(auto_pairs) == len(hr_files):
-        return auto_pairs
-
-    # Final fallback: strict sorted zip if counts match.
-    if len(hr_files) != len(ls_tars):
-        raise ValueError(
-            "Could not build robust pairs automatically. Provide --pairs-json mapping. "
-            f"Found {len(hr_files)} HR files and {len(ls_tars)} Landsat TAR files."
-        )
-    return list(zip(hr_files, ls_tars))
-
 def process_scene(hr_path, ls_tar, out_dir, patch_dir, metadata_dir):
     try:
         hr_id = get_hr_name(hr_path)
@@ -416,12 +399,14 @@ def process_scene(hr_path, ls_tar, out_dir, patch_dir, metadata_dir):
                         skipped += 1
                         continue
 
-                    cloud = extract_bit(qa_patch, BIT_CLOUD) | extract_bit(qa_patch, BIT_CLOUD_SHADOW)
-                    if cloud.mean() > MAX_CLOUD_FRAC:
+                    cloud_only = extract_bit(qa_patch, BIT_CLOUD)
+                    shadow_only = extract_bit(qa_patch, BIT_CLOUD_SHADOW)
+
+                    if cloud_only.mean() > 0.40 or shadow_only.mean() > 0.10:
                         skipped += 1
                         continue
 
-                    lr_patch = lr_patch * scale + offset - 273.15
+                    lr_patch = lr_patch * scale + offset - 273.15  # Convert to Celsius
 
                     hr_patch_transform = from_origin(
                         hr_t.c + hr_col * hr_t.a,
@@ -489,7 +474,7 @@ def main():
     )
     args = parser.parse_args()
 
-    patch_dir = os.path.join(args.out_dir, "sample_tir")
+    patch_dir = os.path.join(args.out_dir, "tir_patches")
     os.makedirs(patch_dir, exist_ok=True)
 
     metadata_dir = os.path.join(args.out_dir, "metadata")
@@ -517,10 +502,10 @@ if __name__ == "__main__":
     main()
 
 # usage
-# python scripts/preprocess/data_prep.py \
-#     --hr-folder /home/ogallo/Documents/CDE/MSC_thesis/Superresolution-TIR/TIR+LS_test/HR \
-#     --ls-folder /home/ogallo/Documents/CDE/MSC_thesis/Superresolution-TIR/TIR+LS_test/LR \
-#     --out-dir /home/ogallo/Documents/CDE/MSC_thesis/Superresolution-TIR/TIR+LS_test/processed \
-#     --pairs-json data/hr_lr_pais.json \
+# python scripts/preprocess/prep.py \
+#     --hr-folder TIR_data/HR \
+#     --ls-folder TIR_data/LR \
+#     --out-dir TIR_data/processed \
+#     --pairs-json TIR_data/processed/hr_lr_pairs.json \
 #     --workers 4
 
