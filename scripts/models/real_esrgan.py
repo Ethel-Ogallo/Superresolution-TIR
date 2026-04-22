@@ -44,26 +44,6 @@ from scripts.utils.loss import gradient_loss
 #  RealESRGANModule                                                            #
 # --------------------------------------------------------------------------- #
 class RealESRGANModule(pl.LightningModule):
-    """
-    Config YAML keys:
-        model_class:          RealESRGANModule
-        n_feats:              64          # RRDBNet num_feat
-        n_blocks:             23          # RRDBNet num_block (23 = official large)
-        pretrained_g_path:    null
-        pretrained_d_path:    null
-        mean:                 0.0
-        std:                  1.0
-        learning_rate:        1e-4
-        bb_lr_scale:          0.1         # backbone LR = lr * bb_lr_scale
-        d_lr_scale:           1.0         # discriminator LR = lr * d_lr_scale
-        patience:             15
-        freeze_backbone:      true
-        lambda_grad:          0.1
-        lambda_perceptual:    1.0
-        lambda_adversarial:   0.1
-        data_range:           80.0
-    """
-
     _HEAD_KEYWORDS = [
         "conv_last", "conv_up1", "conv_up2",
         "conv_hr", "conv_before_upsample",
@@ -159,6 +139,8 @@ class RealESRGANModule(pl.LightningModule):
                 style_weight=0.0,
                 criterion="l1",
             )
+            for p in self.perceptual_loss.parameters():  
+                p.requires_grad = False
         else:
             self.perceptual_loss = None
 
@@ -300,7 +282,8 @@ class RealESRGANModule(pl.LightningModule):
 
         sr_for_metric = sr_crop.clone()
         hr_for_metric = hr_crop.clone()
-        sr_for_metric[~valid_mask] = hr_for_metric[~valid_mask]
+        # sr_for_metric[~valid_mask] = hr_for_metric[~valid_mask]
+        sr_for_metric[~valid_mask] = hr_for_metric[~valid_mask].to(sr_for_metric.dtype)
 
         psnr_val = getattr(self, f"{stage}_psnr")(sr_for_metric, hr_for_metric)
 

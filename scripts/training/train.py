@@ -80,7 +80,7 @@ def get_model_class(model_name: str):
         from scripts.models.hat import HATModule
         return HATModule
     if model_name == "real_esrgan":
-        from scripts.models.realesrgan import RealESRGANModule
+        from scripts.models.real_esrgan import RealESRGANModule
         return RealESRGANModule
     raise ValueError(f"Unknown model '{model_name}'")
 
@@ -232,7 +232,6 @@ def run_fold(
         accelerator="auto",
         devices="auto",
         precision=precision,
-        gradient_clip_val=1.0,
         logger=wandb_logger,
         callbacks=callbacks,
         log_every_n_steps=1,
