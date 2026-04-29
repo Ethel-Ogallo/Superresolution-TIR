@@ -1,5 +1,8 @@
 """
-dataset.py — TIR Super-Resolution dataset and data utilities.
+dataset.py — TIR Super-Resolution dataset creation and data utilities.
+- Computes dataset statistics (mean, std, data range) for normalization and metrics.
+- Defines data augmentations: geometric (flip/rotate), noise, blur.
+- Implements SRDataset for loading LR/HR pairs, masks, and optional AUX data.
 """
 
 import random
@@ -7,11 +10,37 @@ import numpy as np
 import pandas as pd
 import rasterio
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 from scipy.ndimage import gaussian_filter
 
-# -------------- Data stats ---------------
-def compute_mean_std(metadata: pd.DataFrame) -> tuple[float, float]:
+# ----------- AUXILIARY ENCODING FOR AUXILIARY ENCODER -----------
+LULC_CLASSES = [10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 100]
+LULC_LUT = {v: i for i, v in enumerate(LULC_CLASSES)}
+NUM_LULC_CLASSES = len(LULC_CLASSES)
+
+def encode_lulc(lulc):
+    """Convert ESA raw codes → contiguous indices."""
+    encoded = np.full(lulc.shape, -1, dtype=np.int32)
+
+    for raw, idx in LULC_LUT.items():
+        encoded[lulc == raw] = idx
+
+    return encoded
+
+def one_hot_lulc(lulc_idx):
+    """Convert index map → one-hot tensor (C,H,W)."""
+    h, w = lulc_idx.shape
+    out = np.zeros((NUM_LULC_CLASSES, h, w), dtype=np.float32)
+
+    for c in range(NUM_LULC_CLASSES):
+        out[c] = (lulc_idx == c)
+
+    return out
+
+# -------------- Data statistics ---------------
+def compute_mean_std(metadata: pd.DataFrame):
+    """Compute global mean and std from valid pixels across all LR images."""
     pixel_sum = pixel_sq = pixel_count = 0.0
     for _, row in metadata.iterrows():
         with rasterio.open(row["lr_path"]) as src:
@@ -34,6 +63,7 @@ def compute_mean_std(metadata: pd.DataFrame) -> tuple[float, float]:
     return float(mean), float(std)
 
 def compute_data_range(metadata, low_percentile=1.0, high_percentile=99.0, min_range=1e-6):
+    """Compute data range from percentiles of valid HR pixels across the dataset."""
     values = []
     for _, row in metadata.iterrows():
         with rasterio.open(row["hr_path"]) as src:
@@ -62,119 +92,85 @@ def compute_data_range(metadata, low_percentile=1.0, high_percentile=99.0, min_r
     return data_range
 
 # ------------ Data Augmentations ----------------
-#TODO: utilize kornia or pytorch to do the augmentations
-
 class GeoAugment:
-    """Geometric transforms: flips + 90° rotations."""
-#TODO: why not just use torchvision.transforms.RandomHorizontalFlip and RandomVerticalFlip and RandomRotation? 
-# Because we need to apply the same transforms to both LR and HR (and mask), and torchvision's functional API is a bit clunky for that. 
-# This custom class allows us to easily apply the same random transform to all three arrays in a consistent way.
-    def __call__(self, lr, hr, mask):
+    """Random horizontal/vertical flips and 90° rotations."""
+    def __call__(self, lr, hr, mask, aux=None):
         if random.random() > 0.5:
-            lr = np.fliplr(lr).copy()
-            hr = np.fliplr(hr).copy()
+            lr   = np.fliplr(lr).copy()
+            hr   = np.fliplr(hr).copy()
             mask = np.fliplr(mask).copy()
+            if aux is not None:
+                aux = np.flip(aux, axis=2).copy()
         if random.random() > 0.5:
-            lr = np.flipud(lr).copy()
-            hr = np.flipud(hr).copy()
+            lr   = np.flipud(lr).copy()
+            hr   = np.flipud(hr).copy()
             mask = np.flipud(mask).copy()
+            if aux is not None:
+                aux = np.flip(aux, axis=1).copy()
         k = random.randint(0, 3)
         if k > 0:
-            lr = np.rot90(lr, k).copy()
-            hr = np.rot90(hr, k).copy()
+            lr   = np.rot90(lr, k).copy()
+            hr   = np.rot90(hr, k).copy()
             mask = np.rot90(mask, k).copy()
-        return lr, hr, mask
+            if aux is not None:
+                aux = np.rot90(aux, k, axes=(1, 2)).copy()
+        return lr, hr, mask, aux
 
 
 class TIRNoise:
-    """
-    Adds calibrated noise to LR only.
-    std is estimated from the LR (Landsat-8) patches.
-    """
-
+    """Additive Gaussian noise with random scaling factor."""
     def __init__(self, std, p=0.5):
         self.std = std
-        self.p = p
+        self.p   = p
 
-    def __call__(self, lr, hr, mask):
+    def __call__(self, lr, hr, mask, aux=None):
         if random.random() < self.p:
             multiplier = random.uniform(0.5, 1.5)
             noise = np.random.randn(*lr.shape).astype(np.float32) * (self.std * multiplier)
             lr = lr + noise
-        return lr, hr, mask
-
-
-# class ThermalShift:
-#     """
-#     Global diurnal shift applied to both (physically consistent).
-#     Optional inter-sensor bias applied to LR only. ??sensor bias??
-#     """
-#     def __init__(self, range_c=1.0):  #sensor_bias_range=0.5
-#         self.range_c = range_c
-#         # self.sensor_bias = sensor_bias_range
-
-#     def __call__(self, lr, hr, mask):
-#         shift = random.uniform(-self.range_c, self.range_c)
-#         # bias = random.uniform(-self.sensor_bias, self.sensor_bias)
-#         return lr + shift , hr + shift , mask  #+ bias
-
-
-# class ContrastScaling:
-#     """
-#     Scales thermal gradients around each image's own mean. ??physically meaningful??
-#     """
-#     def __init__(self, range_alpha=(0.90, 1.10)):
-#         self.range_alpha = range_alpha
-
-#     def __call__(self, lr, hr, mask):
-#         if random.random() > 0.5:
-#             alpha = random.uniform(*self.range_alpha)
-#             lr_m = lr.mean()
-#             hr_m = hr.mean()
-#             lr = (lr - lr_m) * alpha + lr_m
-#             hr = (hr - hr_m) * alpha + hr_m
-#         return lr, hr, mask
+        return lr, hr, mask, aux
 
 
 class BlurAugment:
-    """
-    Blurs LR only to simulate sensor PSF variability.
-    Handles both (H, W) and (1, H, W) shapes.
-    """
-    def __init__(self, sigma_range=(0.5, 1.5)): #??how to choose sigma range??
+    """Gaussian blur with random sigma applied to LR only."""
+    def __init__(self, sigma_range=(0.5, 1.5)):
         self.sigma_range = sigma_range
 
-    def __call__(self, lr, hr, mask):
+    def __call__(self, lr, hr, mask, aux=None):
         if random.random() > 0.5:
             sig = random.uniform(*self.sigma_range)
             if lr.ndim == 3:
                 lr = gaussian_filter(lr, sigma=(0, sig, sig))
             else:
                 lr = gaussian_filter(lr, sigma=sig)
-        return lr, hr, mask
-
+        return lr, hr, mask, aux
 
 class Compose:
+    """Compose multiple augmentations sequentially."""
     def __init__(self, transforms):
         self.transforms = transforms
 
-    def __call__(self, lr, hr, mask):
+    def __call__(self, lr, hr, mask, aux=None):
         for t in self.transforms:
-            lr, hr, mask = t(lr, hr, mask)
-        return lr, hr, mask
+            lr, hr, mask, aux = t(lr, hr, mask, aux)
+        return lr, hr, mask, aux
 
 # ------------- Dataset -----------------------------
 class SRDataset(Dataset):
-    def __init__(self, metadata, mean=None, std=None, 
-                 patch_size=48, scale=4, transforms=None, 
-                 is_train=True):
-        self.samples = metadata.reset_index(drop=True)
-        self.mean = mean
-        self.std = std
+    """PyTorch Dataset for TIR Super-Resolution.
+    Loads LR/HR image pairs, HR masks, and optional AUX data.
+    Applies augmentations and returns tensors ready for model input.
+    """
+    def __init__(self, metadata, mean=None, std=None,patch_size=48, scale=4, 
+                 transforms=None,is_train=True, use_aux=False):
+        self.samples  = metadata.reset_index(drop=True)
+        self.mean     = mean
+        self.std      = std
         self.transform = transforms
         self.patch_size = patch_size
-        self.scale = scale
+        self.scale    = scale
         self.is_train = is_train
+        self.use_aux  = use_aux
     
     def __len__(self):
         return len(self.samples)
@@ -183,79 +179,101 @@ class SRDataset(Dataset):
         row = self.samples.iloc[idx]
 
         with rasterio.open(row["lr_path"]) as src:
-            lr = src.read(1).astype(np.float32)
+            lr        = src.read(1).astype(np.float32)
             nodata_lr = src.nodata
         with rasterio.open(row["hr_path"]) as src:
-            hr = src.read(1).astype(np.float32)
+            hr        = src.read(1).astype(np.float32)
             nodata_hr = src.nodata
 
-        # Handle Nodata/NaN 
-        # fill = float(self.mean) if self.mean is not None else 0.0
-        # hr_mask = (hr != np.float32(nodata_hr)).astype(np.float32) if nodata_hr is not None else (~np.isnan(hr)).astype(np.float32)
-        # lr = np.nan_to_num(lr, nan=fill) if nodata_lr is None else np.where(lr == np.float32(nodata_lr), fill, lr)
-        # hr = np.nan_to_num(hr, nan=fill) if nodata_hr is None else np.where(hr == np.float32(nodata_hr), fill, hr)
+        # load AUX data if available and enabled
+        aux = None
+        if self.use_aux and "aux_path" in row and pd.notna(row["aux_path"]):
+            with rasterio.open(row["aux_path"]) as src:
+                aux = src.read().astype(np.float32)  # (9, H, W)
+
+        # Handle Nodata/NaN
         fill = float(self.mean) if self.mean is not None else 0.0
 
         def get_clean_data(arr, nd):
-            # Create a mask: True where data is VALID
             mask = np.ones_like(arr, dtype=bool)
             if nd is not None:
-                # Use atol to catch floating point nodata like -3.4e+38
                 mask &= ~np.isclose(arr, nd, atol=1e-3)
             mask &= np.isfinite(arr)
-            
-            # Fill invalid areas with the mean
-            # When we do (cleaned - mean)/std, these areas become 0.0
             cleaned_arr = np.where(mask, arr, fill)
             return cleaned_arr, mask.astype(np.float32)
 
         lr, lr_mask = get_clean_data(lr, nodata_lr)
         hr, hr_mask = get_clean_data(hr, nodata_hr)
 
-        # Force NoData pixels to the MEAN value 
-        # This ensures (pixel - mean) / std becomes exactly 0.0 later
         lr = np.where(lr_mask == 1.0, lr, fill)
         hr = np.where(hr_mask == 1.0, hr, fill)
 
         if self.is_train:
             ih, iw = lr.shape[:2]
-            
-            # We try up to 20 times to find a crop that actually overlaps with your HR strip
             for _ in range(20):
-                iy = random.randint(0, ih - self.patch_size)
-                ix = random.randint(0, iw - self.patch_size)
-                
-                # Calculate where this would land on the HR / Mask
-                iy_h, ix_h = iy * self.scale, ix * self.scale
+                iy   = random.randint(0, ih - self.patch_size)
+                ix   = random.randint(0, iw - self.patch_size)
+                iy_h = iy * self.scale
+                ix_h = ix * self.scale
                 ph_h = self.patch_size * self.scale
-                
-                # Look at the mask for this specific random crop
-                target_mask = hr_mask[iy_h : iy_h + ph_h, ix_h : ix_h + ph_h]
-                
-                # Does this crop contain enough actual HR data? 
-                # (e.g., more than 20% of the pixels are not "No Data")
-                if target_mask.mean() > 0.2: 
-                    break 
+                target_mask = hr_mask[iy_h:iy_h+ph_h, ix_h:ix_h+ph_h]
+                if target_mask.mean() > 0.2:
+                    break
 
-            # slicing the LR, HR, and Mask to the same random crop
-            lr = lr[iy : iy + self.patch_size, ix : ix + self.patch_size]
-            hr = hr[iy_h : iy_h + ph_h, ix_h : ix_h + ph_h]
+            lr      = lr[iy:iy+self.patch_size, ix:ix+self.patch_size]
+            hr      = hr[iy_h:iy_h+ph_h, ix_h:ix_h+ph_h]
             hr_mask = target_mask
 
-        # Apply Remaining Augmentations 
-        if self.transform is not None:
-            lr, hr, hr_mask = self.transform(lr, hr, hr_mask)
+            # crop AUX to same spatial extent as HR if available
+            if aux is not None:
+                aux = aux[:, iy_h:iy_h+ph_h, ix_h:ix_h+ph_h]
 
-        # to tensors and normalize
-        lr, hr, hr_mask = np.ascontiguousarray(lr), np.ascontiguousarray(hr), np.ascontiguousarray(hr_mask)
-        
-        lr_t = torch.from_numpy(lr).unsqueeze(0)
-        hr_t = torch.from_numpy(hr).unsqueeze(0)
+        # Apply augmentations
+        if self.transform is not None:
+            # pass aux through transforms 
+            lr, hr, hr_mask, aux = self.transform(lr, hr, hr_mask, aux)
+            
+        # to tensors
+        lr      = np.ascontiguousarray(lr)
+        hr      = np.ascontiguousarray(hr)
+        hr_mask = np.ascontiguousarray(hr_mask)
+
+        lr_t   = torch.from_numpy(lr).unsqueeze(0)
+        hr_t   = torch.from_numpy(hr).unsqueeze(0)
         mask_t = torch.from_numpy(hr_mask).unsqueeze(0)
 
         if self.mean is not None and self.std is not None:
             lr_t = (lr_t - self.mean) / self.std
             hr_t = (hr_t - self.mean) / self.std
 
-        return lr_t, hr_t, mask_t
+        # AUX PROCESSING 
+        if aux is not None:
+            aux = np.ascontiguousarray(aux)
 
+            # split continuous + LULC
+            cont_aux = aux[:-1]   # NDVI, NDWI, NDMI, bands...
+            lulc_raw = aux[-1]     # ESA WorldCover MAP
+
+            # encode LULC
+            lulc_idx = encode_lulc(lulc_raw)
+            lulc_onehot = one_hot_lulc(lulc_idx)
+
+            # continuous tensor
+            cont_t = torch.from_numpy(cont_aux)
+            aux_min = cont_t.view(cont_t.shape[0], -1).min(1)[0][:, None, None]
+            aux_max = cont_t.view(cont_t.shape[0], -1).max(1)[0][:, None, None]
+            cont_t = (cont_t - aux_min) / (aux_max - aux_min + 1e-6)
+
+            # LULC tensor
+            lulc_t = torch.from_numpy(lulc_onehot)
+
+            aux_t = torch.cat([cont_t, lulc_t], dim=0)
+
+        else:
+            # no AUX case
+            aux_t = torch.zeros(
+                (NUM_LULC_CLASSES, hr_t.shape[-2], hr_t.shape[-1])
+            )
+
+        return lr_t, hr_t, mask_t, aux_t  
+                

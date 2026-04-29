@@ -16,23 +16,24 @@ cd /share/castor/home/e2406751/Superresolution-TIR
 # mkdir -p results/logs/edsr
 
 # -------- Run training --------
-# python -m scripts.training.train \
-#     --model edsr \
-#     --metadata_json data/full_metadata.json \
-#     --pretrained /share/home/e2406751/Superresolution-TIR/data/pretrained/EDSR_baseline_x4.pth \
-#     --random_split \
-#     --lr 1e-4 \
-#     --lambda_grad 0.1 \
-#     --bb_lr_scale 0.1 \
-#     --max_epochs 100 \
-#     --patience 30 \
-#     --batch_size 2  \
-#     --num_workers 2 \
-#     --run_name exp3_fr_256 \
-#     --group EDSR \
-#     --project TIR_sisr \
-#     --freeze_backbone 
+# EDSR
+python -m scripts.training.train \
+    --model edsr \
+    --metadata_json data/full_metadata.json \
+    --pretrained /share/home/e2406751/Superresolution-TIR/data/pretrained/EDSR_baseline_x4.pth \
+    --lr 1e-4 \
+    --lambda_grad 0.1 \
+    --bb_lr_scale 0.1 \
+    --max_epochs 100 \
+    --patience 30 \
+    --batch_size 2  \
+    --num_workers 2 \
+    --run_name exp4_fr_aux \
+    --group EDSR \
+    --project TIR_sisr \
+    --freeze_backbone 
 
+# SWINIR
 # python -m scripts.training.train \
 #     --model swinir \
 #     --metadata_json data/full_metadata.json \
@@ -50,6 +51,7 @@ cd /share/castor/home/e2406751/Superresolution-TIR
 #     --project TIR_sisr \
 #     --freeze_backbone
 
+# HAT
 # # NOTE: change patch size to 64 before running HAT
 # python -m scripts.training.train \
 #     --model hat \
@@ -68,23 +70,24 @@ cd /share/castor/home/e2406751/Superresolution-TIR
 #     --project TIR_sisr \
 #     --freeze_backbone
 
-python -m scripts.training.train \
-    --model real_esrgan \
-    --metadata_json data/full_metadata.json \
-    --pretrained /share/home/e2406751/Superresolution-TIR/data/pretrained/RealESRGAN_generator_x4.pth \
-    --pretrained_d /share/home/e2406751/Superresolution-TIR/data/pretrained/RealESRGAN_discriminator_x4.pth \
-    --random_split \
-    --lr 1e-4 \
-    --lambda_grad 0.1 \
-    --bb_lr_scale 0.1 \
-    --max_epochs 100 \
-    --patience 30 \
-    --batch_size 2 \
-    --num_workers 2 \
-    --run_name exp3_fr_256 \
-    --group Real-ESRGAN \
-    --project TIR_sisr \
-    --freeze_backbone
+# REALESGRAN
+# python -m scripts.training.train \
+#     --model real_esrgan \
+#     --metadata_json data/full_metadata.json \
+#     --pretrained /share/home/e2406751/Superresolution-TIR/data/pretrained/RealESRGAN_generator_x4.pth \
+#     --pretrained_d /share/home/e2406751/Superresolution-TIR/data/pretrained/RealESRGAN_discriminator_x4.pth \
+#     --random_split \
+#     --lr 1e-4 \
+#     --lambda_grad 0.1 \
+#     --bb_lr_scale 0.1 \
+#     --max_epochs 100 \
+#     --patience 30 \
+#     --batch_size 2 \
+#     --num_workers 2 \
+#     --run_name exp3_fr_256 \
+#     --group Real-ESRGAN \
+#     --project TIR_sisr \
+#     --freeze_backbone
 
 
 # EDSR: /share/home/e2406751/Superresolution-TIR/data/pretrained/EDSR_baseline_x4.pth

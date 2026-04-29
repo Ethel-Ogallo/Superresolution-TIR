@@ -1,6 +1,8 @@
 """
 edsr.py — EDSR Lightning module for TIR super-resolution (x4).
-
+- Backbone adapted from BasicSR's EDSR implementation, with option to load pretrained weights.
+- Supports optional AUX encoder branch for additional HR inputs.
+- Training/validation/test steps compute masked L1 loss + gradient loss, and log PSNR/SSIM metrics.
 """
 
 import os
@@ -12,13 +14,11 @@ import lightning.pytorch as pl
 from basicsr.archs import edsr_arch
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 
-from scripts.utils.loss import gradient_loss
+from scripts.utils.aux_encoder import AuxEncoder
+from scripts.utils.metrics import shared_step
 
 
-# ------------------- Model ----------------------------
 class EDSRModule(pl.LightningModule):
-#TODO: include patching logic in the model instead of dataset, to avoid edge artifacts in metrics and allow variable-size inputs.
-    # DEFAULT_DATA_RANGE = 60.0   # °C — fallback if train-fold robust range is not provided
 
     def __init__(
         self,
@@ -32,17 +32,20 @@ class EDSRModule(pl.LightningModule):
         n_blocks:          int   = 16,
         freeze_backbone:   bool  = True,
         lambda_grad:       float = 0.1,
-        data_range: float = 70.0,
+        data_range:        float = 70.0,
+        use_aux:           bool  = False, 
+        aux_channels:      int   = 10,
     ):
         super().__init__()
         self.save_hyperparameters()
         self.DATA_RANGE = float(data_range)
-        print(f"[INFO] DATA_RANGE set to {self.DATA_RANGE}°C ")
+        self.use_aux    = use_aux
+        print(f"[INFO] DATA_RANGE set to {self.DATA_RANGE}°C")
 
-        # Backbone: 3-ch in, 1-ch out 
+        # Backbone — 3ch in for pretrained weights, 1ch out for TIR
         self.body = edsr_arch.EDSR(
             num_in_ch  = 3,
-            num_out_ch = 1,     
+            num_out_ch = 1,
             num_feat   = n_feats,
             num_block  = n_blocks,
             upscale    = 4,
@@ -54,15 +57,27 @@ class EDSRModule(pl.LightningModule):
         if pretrained_path and os.path.exists(pretrained_path):
             self._load_pretrained(pretrained_path)
         else:
-            print("[INFO] No pretrained weights — training EDSR from scratch")
+            print("[INFO] No pretrained weights; training EDSR from scratch")
 
-        # Reset final conv to 1-ch output for TIR
+        # Reset final conv to 1ch output for TIR
         self.body.conv_last = nn.Conv2d(n_feats, 1, kernel_size=3, padding=1)
         self.body.mean      = torch.zeros(1, 1, 1, 1)
 
         self._set_backbone_frozen(freeze_backbone)
 
-        # Metrics initialized without data range since we denormalize before computing them??
+        # AUX encoder — separate branch, does not touch backbone
+        if use_aux:
+            self.aux_encoder = AuxEncoder(
+                in_channels=aux_channels,
+                base_channels=n_feats
+            )
+            # fuse upsampled LR features + AUX features at HR resolution
+            self.fusion = nn.Conv2d(n_feats * 2, n_feats, kernel_size=1)
+            print(f"[INFO] AUX encoder enabled with {aux_channels} input channels")
+        else:
+            print("[INFO] AUX encoder disabled; standard EDSR")
+
+        # Metrics
         for split in ("train", "val", "test"):
             setattr(self, f"{split}_psnr", PeakSignalNoiseRatio(data_range=self.DATA_RANGE))
             setattr(self, f"{split}_ssim", StructuralSimilarityIndexMeasure(data_range=self.DATA_RANGE))
@@ -71,20 +86,7 @@ class EDSRModule(pl.LightningModule):
     def denormalize(self, t: torch.Tensor) -> torch.Tensor:
         mean = torch.tensor(self.hparams.mean, device=t.device)
         std  = torch.tensor(self.hparams.std,  device=t.device)
-        return t * std + mean 
-
-    @staticmethod
-    def crop_to_valid_bbox(tensor: torch.Tensor, mask: torch.Tensor):
-        """Crop to tight bounding box of valid (mask=1) pixels."""
-        m    = mask[:, 0, :, :]
-        flat = m.any(dim=0)
-        rows = flat.any(dim=1).nonzero(as_tuple=True)[0]
-        cols = flat.any(dim=0).nonzero(as_tuple=True)[0]
-        if rows.numel() == 0 or cols.numel() == 0:
-            return tensor, mask
-        r0, r1 = rows[0].item(), rows[-1].item() + 1
-        c0, c1 = cols[0].item(), cols[-1].item() + 1
-        return tensor[:, :, r0:r1, c0:c1], mask[:, :, r0:r1, c0:c1]
+        return t * std + mean
 
     # --------------- Pretrained loading -------
     def _load_pretrained(self, path: str):
@@ -118,7 +120,7 @@ class EDSRModule(pl.LightningModule):
         self.body.load_state_dict(matched, strict=False)
         print(f"[INFO] Matched {len(matched)} / {len(model_dict)} layers")
 
-    # Freeze logic 
+    # Freeze logic
     def _set_backbone_frozen(self, frozen: bool):
         for name, param in self.body.named_parameters():
             param.requires_grad = (
@@ -126,117 +128,46 @@ class EDSRModule(pl.LightningModule):
                 or ("conv_last" in name)
                 or ("upsample"  in name)
             )
-            # if param.requires_grad:
-            #     print(name)
 
-    # Forward 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x : (B, 1, H, W) → sr : (B, 1, H*4, W*4)"""
-        x = x.repeat(1, 3, 1, 1)
-        return self.body(x)
+    # Forward
+    def forward(self, lr: torch.Tensor, aux: torch.Tensor = None):
 
-    # -------------------- Shared step --------------------
-    def _shared_step(self, batch, stage: str):
-        lr_img, hr_img, hr_mask = batch
-        sr_img = self(lr_img)
+        lr_3ch = lr.repeat(1, 3, 1, 1) #repeat 1ch TIR to 3ch for EDSR backbone, since pretrained weights expect 3 channels
 
-        sr = self.denormalize(sr_img)
-        hr = self.denormalize(hr_img)
+        #  EDSR backbone 
+        lr_feats = self.body.conv_first(lr_3ch)
+        res = self.body.body(lr_feats)
+        res = self.body.conv_after_body(res) + lr_feats
 
-        # # Reconstruction loss (masked L1)
-        # abs_err = torch.abs(sr - hr) * hr_mask
-        # recon_loss = abs_err.sum() / torch.clamp(hr_mask.sum(), min=1.0)
+        # AUX branch
+        if self.use_aux and aux is not None:
+            aux_feats = self.aux_encoder(aux)
+            # align feature spaces BEFORE upsample fusion
+            fused = torch.cat([res, aux_feats], dim=1)
+            fused = self.fusion(fused)            
+            out = self.body.upsample(fused) # NOW upsample once after fusion
 
-        # # Gradient loss
-        # if self.hparams.lambda_grad > 0:
-        #     grad_loss = gradient_loss(sr, hr, hr_mask)
-        #     loss = recon_loss + self.hparams.lambda_grad * grad_loss
-        # else:
-        #     grad_loss = torch.tensor(0.0, device=sr.device)
-        #     loss = recon_loss
+            return self.body.conv_last(out)
 
-        # >>>>> NEW START
-        # 1. Check if we have any valid data in this batch
-        mask_sum = hr_mask.sum()
-        if mask_sum < 1.0:
-            # Multiply the model output by 0.0
-            # This 'chains' the model to the loss so the scaler stays happy,
-            # but the actual gradient value will be 0, so no weights change.
-            return sr_img.sum() * 0.0
+        # no AUX, standard EDSR flow
+        out = self.body.upsample(res)
+        return self.body.conv_last(out)
 
-        # 2. Reconstruction loss (masked L1)
-        abs_err = torch.abs(sr - hr) * hr_mask
-        recon_loss = abs_err.sum() / mask_sum
-
-        # 3. Gradient loss (using your existing function)
-        if self.hparams.lambda_grad > 0:
-            grad_loss = gradient_loss(sr, hr, hr_mask)
-            loss = recon_loss + self.hparams.lambda_grad * grad_loss
-        else:
-            grad_loss = torch.tensor(0.0, device=sr.device)
-            loss = recon_loss
-        # >>>NEW END
-
-        # METRICS 
-        with torch.no_grad():
-            # 1. Focus only on the area with the flight strip
-            sr_crop, mask_crop = self.crop_to_valid_bbox(sr, hr_mask)
-            hr_crop, _ = self.crop_to_valid_bbox(hr, hr_mask)
-
-            valid = (mask_crop > 0.5)
-
-            if valid.sum() == 0:
-                psnr_val = ssim_val = torch.tensor(0.0, device=sr.device)
-            else:
-                # 2. Prepare images for metrics
-                # We zero out everything outside the mask for BOTH images.
-                # This makes the backgrounds identical so SSIM ignores them.
-                sr_clean = sr_crop * mask_crop
-                hr_clean = hr_crop * mask_crop
-
-                # 3. PSNR Calculation
-                # Standard PSNR on the masked images
-                psnr_val = getattr(self, f"{stage}_psnr")(sr_clean, hr_clean)
-
-                # 4. SSIM Calculation
-                h, w = sr_crop.shape[-2:]
-                if min(h, w) < 11:
-                    ssim_val = torch.tensor(0.0, device=sr.device)
-                else:
-                    # By having 0 in the background of both, SSIM focuses 
-                    # only on the structural difference of the river strip.
-                    ssim_val = getattr(self, f"{stage}_ssim")(sr_clean, hr_clean)
-
-            if valid.sum() == 0:
-                mae_val = torch.tensor(0.0, device=sr.device)
-            else:
-                err = sr_crop - hr_crop
-                err = err[valid]
-
-                mae_val = err.abs().mean()
-
-        self.log(f"{stage}_loss", loss, on_epoch=True, prog_bar=True)
-        self.log(f"{stage}_recon_loss", recon_loss, on_epoch=True, prog_bar=False)
-        self.log(f"{stage}_grad_loss", grad_loss, on_epoch=True, prog_bar=False)
-        self.log(f"{stage}_psnr", psnr_val, on_epoch=True, prog_bar=True)
-        self.log(f"{stage}_ssim", ssim_val, on_epoch=True, prog_bar=True)
-        self.log(f"{stage}_mae", mae_val, on_epoch=True, prog_bar=True)
-
-        return loss
-
+    # -------------------- Steps --------------------
     def training_step(self, batch, batch_idx):
-        return self._shared_step(batch, "train")
+        return shared_step(self, batch, "train")
 
     def validation_step(self, batch, batch_idx):
-        return self._shared_step(batch, "val")
+        return shared_step(self, batch, "val")
 
     def test_step(self, batch, batch_idx):
-        return self._shared_step(batch, "test")
+        return shared_step(self, batch, "test")
 
     # ------------------- Optimizer --------------------
     def configure_optimizers(self):
-        backbone = []
-        head = []
+        backbone   = []
+        head       = []
+        aux_params = []
 
         for name, p in self.body.named_parameters():
             if not p.requires_grad:
@@ -246,10 +177,23 @@ class EDSRModule(pl.LightningModule):
             else:
                 backbone.append(p)
 
-        optimizer = optim.Adam([
-            {"params": backbone, "lr": self.hparams.learning_rate * self.hparams.bb_lr_scale},
-            {"params": head,     "lr": self.hparams.learning_rate},
-        ], weight_decay=1e-6)
+        # AUX encoder trains at full LR
+        if self.use_aux:
+            aux_params = (
+                list(self.aux_encoder.parameters()) +
+                list(self.fusion.parameters())
+            )
+
+        param_groups = [
+            {"params": backbone,   "lr": self.hparams.learning_rate * self.hparams.bb_lr_scale},
+            {"params": head,       "lr": self.hparams.learning_rate},
+        ]
+        if aux_params:
+            param_groups.append(
+                {"params": aux_params, "lr": self.hparams.learning_rate}
+            )
+
+        optimizer = optim.Adam(param_groups, weight_decay=1e-6)
 
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,

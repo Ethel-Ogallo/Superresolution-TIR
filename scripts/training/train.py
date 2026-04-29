@@ -1,18 +1,8 @@
 """
-train.py — TIR SR training.
-
-Split strategies (mutually exclusive):
-    --loo                          Leave-one-out across all campaigns (recommended)
-    --holdout_campaign BCR_2022    Single fixed campaign holdout
-    --random_split                 Random 70/15/15 patch-level split
-
-Usage:
-    python -m scripts.training.train --model edsr --loo
-    python -m scripts.training.train --model edsr --holdout_campaign BCR_2022
-    python -m scripts.training.train --model edsr --random_split
-    python -m scripts.training.train --model real_esrgan --loo \
-        --pretrained weights/RealESRGAN_x4plus.pth \
-        --pretrained_d weights/RealESRGAN_x4plus_netD.pth
+train.py — TIR SR training with stratified random split.
+- Loads metadata, computes stats, creates datasets and dataloaders.
+- Builds model from config, sets up W&B logging and callbacks.
+- Runs training and test evaluation, logging results to W&B.
 """
 
 import argparse
@@ -41,8 +31,6 @@ from scripts.utils.dataset import (
     GeoAugment,
     TIRNoise,
     BlurAugment,
-    # ContrastScaling,
-    # ThermalShift,
 )
 
 
@@ -95,61 +83,55 @@ def _derive_campaign_id(row: pd.Series) -> str:
     return "unknown"
 
 
-# ---------------------- Split strategies ---------------------
-def campaign_split(metadata: pd.DataFrame, holdout_campaign: str):
-    """Hold out one campaign for test, random 80/20 on the rest for train/val."""
-    test_df   = metadata[metadata["campaign_id"] == holdout_campaign]
-    remaining = metadata[metadata["campaign_id"] != holdout_campaign]
-    train_idx, val_idx = train_test_split(remaining.index, test_size=0.2, random_state=42)
-    train_df  = remaining.loc[train_idx]
-    val_df    = remaining.loc[val_idx]
-    print(f"  Train campaigns : {sorted(train_df['campaign_id'].unique().tolist())}")
-    print(f"  Split — train: {len(train_df)} | val: {len(val_df)} | test: {len(test_df)}")
+# ---------------------- Split ---------------------
+def stratified_random_split(metadata: pd.DataFrame):
+    """70/15/15 split stratified by campaign_id."""
+    train_val, test_df = train_test_split(
+        metadata, test_size=0.15, random_state=42,
+        stratify=metadata["campaign_id"]
+    )
+    train_df, val_df = train_test_split(
+        train_val, test_size=0.15/0.85, random_state=42,
+        stratify=train_val["campaign_id"]
+    )
+    print(f"\n  Stratified split:")
+    print(f"  Train: {len(train_df)} patches")
+    print(f"  Val:   {len(val_df)} patches")
+    print(f"  Test:  {len(test_df)} patches")
+    print(f"\n  Per-campaign distribution:")
+    for cid in sorted(metadata["campaign_id"].unique()):
+        n_train = (train_df["campaign_id"] == cid).sum()
+        n_val   = (val_df["campaign_id"]   == cid).sum()
+        n_test  = (test_df["campaign_id"]  == cid).sum()
+        print(f"    {cid:15s} train:{n_train:4d} val:{n_val:4d} test:{n_test:4d}")
     return train_df, val_df, test_df
 
 
-def random_split(metadata: pd.DataFrame):
-    """Random 70/15/15 patch-level split ignoring campaigns."""
-    train_val, test_df = train_test_split(metadata, test_size=0.15, random_state=42)
-    train_df, val_df   = train_test_split(train_val, test_size=0.15/0.85, random_state=42)
-    print(f"  Random split — train: {len(train_df)} | val: {len(val_df)} | test: {len(test_df)}")
-    return train_df, val_df, test_df
-
-
-def save_split_to_metadata(train_df, val_df, test_df, metadata_json: str, strategy: str):
-    """Write split assignments back to the source metadata JSON."""
+def save_split(train_df, val_df, test_df, metadata_json: str):
+    """Write split assignments back to metadata JSON."""
     with open(metadata_json) as f:
         metadata = pd.DataFrame(json.load(f))
 
     metadata["split"] = None
-    metadata["split_strategy"] = strategy
     metadata.loc[metadata["patch_name"].isin(train_df["patch_name"]), "split"] = "train"
     metadata.loc[metadata["patch_name"].isin(val_df["patch_name"]),   "split"] = "val"
     metadata.loc[metadata["patch_name"].isin(test_df["patch_name"]),  "split"] = "test"
 
     with open(metadata_json, "w") as f:
         json.dump(json.loads(metadata.to_json(orient="records", indent=2)), f, indent=2)
-    print(f"  Split ({strategy}) saved to {metadata_json}")
+    print(f"\n  Split saved to {metadata_json}")
 
 
-# ---------------------- Core training function ---------------------
-def run_fold(
-    train_df: pd.DataFrame,
-    val_df: pd.DataFrame,
-    test_df: pd.DataFrame,
-    fold_name: str,
-    args,
-    model_cfg: dict,
-) -> dict:
-    """Train and evaluate one fold."""
+# ---------------------- Core training ---------------------
+def run(train_df, val_df, test_df, args, model_cfg):
     print(f"\n{'='*50}")
-    print(f"FOLD: {fold_name}")
+    print(f"MODEL: {args.model.upper()}")
     print(f"{'='*50}")
 
     mean, std  = compute_mean_std(train_df)
     data_range = compute_data_range(train_df)
 
-    train_patch_size = model_cfg.get("patch_size", 48) 
+    train_patch_size = model_cfg.get("patch_size", 48)
     if "img_size" in model_cfg and args.model in ["swinir", "hat"]:
         train_patch_size = model_cfg["img_size"]
 
@@ -159,43 +141,46 @@ def run_fold(
         BlurAugment(sigma_range=(0.5, 1.2)),
     ])
 
+    use_aux = "aux_path" in train_df.columns and train_df["aux_path"].notna().any()
+    print(f"[INFO] use_aux={use_aux}")
+
     train_ds = SRDataset(train_df, mean=mean, std=std, patch_size=train_patch_size,
-                         is_train=True,  transforms=train_aug)
+                         is_train=True,  transforms=train_aug, use_aux=use_aux)
     val_ds   = SRDataset(val_df,   mean=mean, std=std,
-                         is_train=False, transforms=None)
-    test_ds  = SRDataset(test_df,  mean=mean, std=std, 
-                         is_train=False, transforms=None)
+                         is_train=False, transforms=None,      use_aux=use_aux)
+    test_ds  = SRDataset(test_df,  mean=mean, std=std,
+                         is_train=False, transforms=None,      use_aux=use_aux)
 
     loader_kw    = dict(num_workers=args.num_workers, pin_memory=True)
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,  **loader_kw)
     val_loader   = DataLoader(val_ds,   batch_size=args.batch_size, shuffle=False, **loader_kw)
     test_loader  = DataLoader(test_ds,  batch_size=1,               shuffle=False, **loader_kw)
 
-    # Build model 
+    # Build model
     cls           = get_model_class(args.model)
     explicit_keys = {
         "mean", "std", "learning_rate", "patience", "pretrained_path",
         "pretrained_g_path", "pretrained_d_path",
-        "freeze_backbone", "bb_lr_scale", "lambda_grad", "model_class",
-        "precision", "data_range", "patch_size", "img_size",
+        "freeze_backbone", "bb_lr_scale", "lambda_grad",
+        "model_class", "precision", "data_range",
     }
-    model_hparams = {k: v for k, v in model_cfg.items() if k not in explicit_keys}
-    init_params   = inspect.signature(cls.__init__).parameters
+    model_hparams           = {k: v for k, v in model_cfg.items() if k not in explicit_keys}
+    model_hparams["use_aux"] = use_aux
 
+    init_params = inspect.signature(cls.__init__).parameters
     if "data_range" in init_params:
         model_hparams["data_range"] = data_range
 
     precision = model_cfg.get("precision", "bf16-mixed")
-    print(f"[INFO] Using precision: {precision} for {args.model}")
+    print(f"[INFO] Using precision: {precision}")
 
-    #  RealESRGAN takes two pretrained paths
     if args.model == "real_esrgan":
         model = cls(
             mean=mean, std=std,
             learning_rate=args.lr,
             patience=args.patience,
-            pretrained_g_path=args.pretrained,    # --pretrained  (generator)
-            pretrained_d_path=args.pretrained_d,  # --pretrained_d (discriminator)
+            pretrained_g_path=args.pretrained,
+            pretrained_d_path=args.pretrained_d,
             freeze_backbone=args.freeze_backbone,
             bb_lr_scale=args.bb_lr_scale,
             lambda_grad=args.lambda_grad,
@@ -206,22 +191,22 @@ def run_fold(
             mean=mean, std=std,
             learning_rate=args.lr,
             patience=args.patience,
-            pretrained_path=args.pretrained,      # --pretrained  (single ckpt)
+            pretrained_path=args.pretrained,
             freeze_backbone=args.freeze_backbone,
             bb_lr_scale=args.bb_lr_scale,
             lambda_grad=args.lambda_grad,
             **model_hparams,
         )
 
-    run_name = f"{args.run_name or args.model.upper()}_{fold_name}"
-    group    = args.group or args.model.upper()
+    run_name = args.run_name or args.model.upper()
+    group    = args.group    or args.model.upper()
 
     wandb_logger = WandbLogger(
         project=args.project,
         name=run_name,
         group=group,
         log_model='all',
-        config={**model_cfg, **vars(args), "fold": fold_name},
+        config={**model_cfg, **vars(args)},
     )
 
     callbacks = [
@@ -229,7 +214,7 @@ def run_fold(
         ModelCheckpoint(
             monitor="val_psnr", mode="max", save_top_k=1,
             filename=f"{run_name}-{{epoch:03d}}-{{val_psnr:.2f}}",
-            dirpath=f"/tmp/checkpoints/{fold_name}",
+            dirpath=f"checkpoints/{run_name}",
         ),
         LearningRateMonitor(logging_interval="epoch"),
     ]
@@ -246,6 +231,7 @@ def run_fold(
 
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
     results = trainer.test(model, dataloaders=test_loader, ckpt_path="best")[0]
+    print(f"\nTest results: {results}")
 
     wandb.finish()
     return results
@@ -263,44 +249,18 @@ def main():
 
     with open(args.metadata_json) as f:
         metadata = pd.DataFrame(json.load(f))
+
     if "campaign_id" not in metadata.columns:
         metadata["campaign_id"] = metadata.apply(_derive_campaign_id, axis=1)
 
-    campaigns = sorted(metadata["campaign_id"].dropna().unique().tolist())
-    print(f"Campaigns found: {campaigns}")
+    print(f"Total patches: {len(metadata)}")
+    print(f"Campaigns: {sorted(metadata['campaign_id'].unique().tolist())}")
 
     start = time.time()
 
-    if args.loo:
-        all_results = {}
-        for campaign in campaigns:
-            train_df, val_df, test_df = campaign_split(metadata, campaign)
-            all_results[campaign] = run_fold(
-                train_df, val_df, test_df, campaign, args, model_cfg
-            )
-        print("\n" + "="*50)
-        print(f"LOO RESULTS — {args.model.upper()}")
-        print("="*50)
-        metrics = list(next(iter(all_results.values())).keys())
-        summary = {}
-        for metric in metrics:
-            values = [all_results[c][metric] for c in campaigns]
-            summary[metric] = {"mean": float(np.mean(values)), "std": float(np.std(values))}
-            print(f"{metric}: {np.mean(values):.4f} ± {np.std(values):.4f}")
-        out_path = f"results/logs/{args.model}_loo_results.json"
-        with open(out_path, "w") as f:
-            json.dump({"folds": all_results, "summary": summary}, f, indent=2)
-        print(f"Results saved to {out_path}")
-
-    elif args.holdout_campaign:
-        train_df, val_df, test_df = campaign_split(metadata, args.holdout_campaign)
-        save_split_to_metadata(train_df, val_df, test_df, args.metadata_json, "campaign")
-        run_fold(train_df, val_df, test_df, args.holdout_campaign, args, model_cfg)
-
-    else:
-        train_df, val_df, test_df = random_split(metadata)
-        save_split_to_metadata(train_df, val_df, test_df, args.metadata_json, "random")
-        run_fold(train_df, val_df, test_df, "random", args, model_cfg)
+    train_df, val_df, test_df = stratified_random_split(metadata)
+    save_split(train_df, val_df, test_df, args.metadata_json)
+    run(train_df, val_df, test_df, args, model_cfg)
 
     print(f"\nCompleted in {(time.time() - start) / 60:.2f} min")
 
@@ -314,20 +274,9 @@ def parse_args():
 
     # Data
     p.add_argument("--metadata_json", default="data/full_metadata.json")
-    p.add_argument("--pretrained",    default=None,
-                   help="Generator (or single-model) pretrained checkpoint path")
-    # ── RealESRGAN only — ignored silently for all other models ──────── #
+    p.add_argument("--pretrained",    default=None)
     p.add_argument("--pretrained_d",  default=None,
-                   help="Discriminator pretrained checkpoint path (real_esrgan only)")
-
-    # Split strategy — mutually exclusive
-    split_group = p.add_mutually_exclusive_group(required=True)
-    split_group.add_argument("--loo", action="store_true",
-                             help="Leave-one-out CV across all campaigns")
-    split_group.add_argument("--holdout_campaign", default=None,
-                             help="Single fixed campaign holdout e.g. BCR_2022")
-    split_group.add_argument("--random_split", action="store_true",
-                             help="Random 70/15/15 patch-level split ignoring campaigns")
+                   help="Discriminator checkpoint (real_esrgan only)")
 
     # Training
     p.add_argument("--lr",              type=float, default=1e-4)
@@ -342,10 +291,8 @@ def parse_args():
 
     # W&B
     p.add_argument("--project",  default="TIR_sisr")
-    p.add_argument("--run_name", default=None,
-                   help="Base run name, fold suffix appended automatically")
-    p.add_argument("--group",    default=None,
-                   help="W&B group name")
+    p.add_argument("--run_name", default=None)
+    p.add_argument("--group",    default=None)
 
     return p.parse_args()
 

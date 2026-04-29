@@ -14,6 +14,7 @@ def create_metadata(
     processed_dir: str,
     hr_patch_dir: str,
     lr_patch_dir: str,
+    aux_patch_dir: str,
     output_path: str
 ):
     """
@@ -38,9 +39,11 @@ def create_metadata(
             # Absolute paths
             hr_file = patch_id if patch_id.endswith(".tif") else patch_id + ".tif"
             lr_file = patch_id if patch_id.endswith(".tif") else patch_id + ".tif"
+            aux_file = patch_id if patch_id.endswith(".tif") else patch_id + ".tif"
 
             hr_path = os.path.abspath(os.path.join(hr_patch_dir, hr_file))
             lr_path = os.path.abspath(os.path.join(lr_patch_dir, lr_file))
+            aux_path = os.path.abspath(os.path.join(aux_patch_dir, aux_file))
 
             # Skip missing files
             if not os.path.exists(hr_path):
@@ -49,12 +52,16 @@ def create_metadata(
             if not os.path.exists(lr_path):
                 print(f"[WARN] Missing LR patch: {lr_path}")
                 continue
+            if not os.path.exists(aux_path):
+                print(f"[WARN] Missing AUX patch: {aux_path}")
+                continue
 
             # Add patch_id and paths
             entry["patch_id"] = patch_id
             entry["campaign_id"] = derive_campaign_id(entry, patch_id)
             entry["hr_path"] = hr_path
             entry["lr_path"] = lr_path
+            entry["aux_path"] = aux_path
 
             all_metadata.append(entry)
 
@@ -62,7 +69,7 @@ def create_metadata(
     with open(output_path, "w") as f:
         json.dump(all_metadata, f, indent=2)
 
-    print(f"\n[INFO] Merged {len(all_metadata)} patches → {output_path}")
+    print(f"\n[INFO] Merged {len(all_metadata)} patches {output_path}")
 
 
 def parse_args():
@@ -75,6 +82,8 @@ def parse_args():
                         help="Directory containing HR patches.")
     parser.add_argument("--lr_patch_dir", required=True,
                         help="Directory containing LR patches.")
+    parser.add_argument("--aux_patch_dir", required=True,
+                        help="Directory containing AUX patches.")
     parser.add_argument("--output_json", default="global_patch_metadata.json",
                         help="Path to save the global metadata JSON.")
     return parser.parse_args()
@@ -86,6 +95,7 @@ def main():
         processed_dir=args.processed_dir,
         hr_patch_dir=args.hr_patch_dir,
         lr_patch_dir=args.lr_patch_dir,
+        aux_patch_dir=args.aux_patch_dir,
         output_path=args.output_json
     )
 
@@ -98,4 +108,5 @@ if __name__ == "__main__":
 #   --processed_dir data/processed \
 #   --hr_patch_dir data/processed/tir_patches/HR \
 #   --lr_patch_dir data/processed/tir_patches/LR \
+#   --aux_patch_dir data/processed/tir_patches/AUX \
 #   --output_json data/full_metadata.json
