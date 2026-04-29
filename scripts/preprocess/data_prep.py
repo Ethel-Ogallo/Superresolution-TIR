@@ -20,13 +20,12 @@ from rasterio.mask import mask
 from shapely.geometry import box
 import geopandas as gpd
 
-
 # ---------------- PARAMETERS ----------------
 SCALE_FACTOR = 4
 LR_RESOLUTION_M = 30
-HR_PATCH_SIZE = 512
+HR_PATCH_SIZE = 256  #256 or 512
 LR_PATCH_SIZE = HR_PATCH_SIZE // SCALE_FACTOR
-HR_STRIDE = HR_PATCH_SIZE // 2
+HR_STRIDE = 128 #HR_PATCH_SIZE // 2
 CLIP_BUFFER_M = 300
 MAX_CLOUD_FRAC = 0.10
 BIT_CLOUD = 3
@@ -52,9 +51,18 @@ def extract_bit(arr, bit):
     """Return boolean mask for a bit position in QA raster."""
     return ((arr.astype(np.uint16) >> bit) & 1) == 1
 
-# def get_hr_name(path):
-#     parts = os.path.basename(path).replace(".tif", "").split("_")
-#     return f"{parts[0]}_{parts[1]}"  # e.g. "PDR_2013"
+
+def build_valid_mask(arr, nodata):
+    """Return mask of valid (finite and non-nodata) pixels."""
+    mask = np.isfinite(arr)
+    if nodata is None:
+        return mask
+    if np.isnan(nodata):
+        return mask & ~np.isnan(arr)
+
+    atol = max(1e-6, abs(float(nodata)) * 1e-6)
+    return mask & ~np.isclose(arr, nodata, rtol=0.0, atol=atol)
+
 def get_hr_name(path):
     base = os.path.basename(path).replace(".tif", "")
     # normalize separators, drop TEMP suffix
@@ -138,35 +146,151 @@ def downsample_hr(hr_path, out_path):
                 resampling=Resampling.cubic
             )
 
-# ---------------- PATCH LOGIC ----------------
-def get_river_col(valid_mask, hr_row, hr_h, hr_w, patch_size):
-    row_end = min(hr_row + patch_size, hr_h)
-    row_band = valid_mask[hr_row:row_end, :]
-    col_counts = row_band.sum(axis=0)
-    valid_cols = np.where(col_counts > 0)[0]
-    if len(valid_cols) == 0:
-        return None
-    weights = col_counts[valid_cols]
-    river_col = int(np.average(valid_cols, weights=weights))
-    hr_col = river_col - patch_size // 2
-    return max(0, min(hr_col, hr_w - patch_size))
+def clip_and_downsample_hr(hr_path, out_path, t_max=60):
+    """Clip temperatures and downsample HR to 7.5m resolution ."""
+    gt_res = LR_RESOLUTION_M / SCALE_FACTOR
+    with rasterio.open(hr_path) as src:
+        data = src.read(1).astype(np.float32)
+        nodata = src.nodata
 
-def compute_positions(hr_full, hr_nodata) -> List[Tuple[int, int]]:
-    """Compute strip-aware HR patch origins from an HR array."""
-    hr_full = hr_full.astype(np.float32)
+        # clip before downsampling so artifacts don't contaminate neighbors
+        valid_mask = (data != nodata) if nodata is not None else np.ones(data.shape, bool)
+        data[valid_mask] = np.clip(data[valid_mask], a_min=None, a_max=t_max)
+
+        transform = from_origin(src.transform.c, src.transform.f, gt_res, gt_res)
+        width = int(src.width * src.res[0] / gt_res)
+        height = int(src.height * src.res[1] / gt_res)
+        meta = src.meta.copy()
+        meta.update({"width": width, "height": height, "transform": transform, "dtype": "float32"})
+
+        with rasterio.MemoryFile() as memfile:
+            with memfile.open(**src.meta) as mem:
+                mem.write(data, 1)
+            with memfile.open() as mem:
+                with rasterio.open(out_path, "w", **meta) as dst:
+                    reproject(
+                        source=rasterio.band(mem, 1),
+                        destination=rasterio.band(dst, 1),
+                        src_transform=src.transform,
+                        src_crs=src.crs,
+                        dst_transform=transform,
+                        dst_crs=src.crs,
+                        resampling=Resampling.cubic
+                    )
+
+# ---------------- PATCH LOGIC ----------------
+def compute_positions(
+    hr_full,
+    hr_nodata,
+    hr_patch_size,
+    hr_stride,
+    min_valid_frac=0.10,
+    max_valid_frac=0.95,
+    min_patches=20,
+    max_patches=2000,
+    row_bins=24,
+):
+    """Compute HR patch origins from valid-pixel coverage only.
+
+    This keeps tiling simple for single-band TIR strips and still enforces
+    meaningful river presence in each patch. If filtering is too strict for a
+    scene, thresholds are relaxed automatically.
+    """
     hr_h, hr_w = hr_full.shape
-    valid_mask = (hr_full != hr_nodata) if hr_nodata is not None else (hr_full < 1e38)
-    positions = []
-    for hr_row in range(0, hr_h - HR_PATCH_SIZE + 1, HR_STRIDE):
-        hr_col = get_river_col(valid_mask, hr_row, hr_h, hr_w, HR_PATCH_SIZE)
-        if hr_col is not None:
-            positions.append((hr_row, hr_col))
-    # include last row if missing
-    last_row = hr_h - HR_PATCH_SIZE
-    if positions and positions[-1][0] != last_row:
-        hr_col = get_river_col(valid_mask, last_row, hr_h, hr_w, HR_PATCH_SIZE)
-        if hr_col is not None:
-            positions.append((last_row, hr_col))
+
+    valid_mask = build_valid_mask(hr_full, hr_nodata)
+
+    rows, cols = np.where(valid_mask)
+    if len(rows) == 0:
+        return []
+
+    r_min, r_max = int(rows.min()), int(rows.max())
+    c_min, c_max = int(cols.min()), int(cols.max())
+
+    # Build row/col starts within valid bbox and include trailing edge coverage.
+    row_starts = list(range(r_min, max(r_min + 1, r_max - hr_patch_size + 1), hr_stride))
+    col_starts = list(range(c_min, max(c_min + 1, c_max - hr_patch_size + 1), hr_stride))
+
+    row_last = max(0, min(r_max - hr_patch_size + 1, hr_h - hr_patch_size))
+    col_last = max(0, min(c_max - hr_patch_size + 1, hr_w - hr_patch_size))
+    row_starts.append(row_last)
+    col_starts.append(col_last)
+
+    row_starts = sorted(set(row_starts))
+    col_starts = sorted(set(col_starts))
+
+    candidates = []
+    for row in row_starts:
+        for col in col_starts:
+            r0 = max(0, min(row, hr_h - hr_patch_size))
+            c0 = max(0, min(col, hr_w - hr_patch_size))
+            patch_mask = valid_mask[r0:r0 + hr_patch_size, c0:c0 + hr_patch_size]
+            valid_frac = float(patch_mask.mean())
+            if min_valid_frac <= valid_frac <= max_valid_frac:
+                candidates.append((r0, c0, valid_frac))
+
+    # If a scene is too narrow/complex, relax filters so it still contributes.
+    if len(candidates) < min_patches:
+        relaxed_min = max(0.03, min_valid_frac * 0.5)
+        candidates = []
+        for row in row_starts:
+            for col in col_starts:
+                r0 = max(0, min(row, hr_h - hr_patch_size))
+                c0 = max(0, min(col, hr_w - hr_patch_size))
+                patch_mask = valid_mask[r0:r0 + hr_patch_size, c0:c0 + hr_patch_size]
+                valid_frac = float(patch_mask.mean())
+                if valid_frac >= relaxed_min:
+                    candidates.append((r0, c0, valid_frac))
+
+    # Keep positions representative along the river length and coverage levels.
+    # This avoids over-sampling one dense zone while still keeping edge/core structure.
+    unique_candidates = sorted({(r0, c0, vf) for r0, c0, vf in candidates})
+    if not unique_candidates:
+        print("  Candidate patches after valid coverage filter: 0")
+        return []
+
+    if len(unique_candidates) <= max_patches:
+        positions = [(r0, c0) for r0, c0, _ in unique_candidates]
+    else:
+        r_span = max(1, (r_max - r_min + 1))
+        n_bins = max(1, row_bins)
+        per_bin_cap = max(1, int(np.ceil(max_patches / n_bins)))
+
+        selected = []
+        for b in range(n_bins):
+            b0 = r_min + (b * r_span) // n_bins
+            b1 = r_min + ((b + 1) * r_span) // n_bins
+            in_bin = [c for c in unique_candidates if b0 <= c[0] < b1]
+            if not in_bin:
+                continue
+
+            edge = [c for c in in_bin if 0.10 <= c[2] < 0.25]
+            mid = [c for c in in_bin if 0.25 <= c[2] < 0.60]
+            core = [c for c in in_bin if 0.60 <= c[2] <= 0.95]
+
+            quota_edge = max(1, per_bin_cap // 4)
+            quota_mid = max(1, per_bin_cap // 2)
+            quota_core = max(1, per_bin_cap - quota_edge - quota_mid)
+
+            selected.extend(edge[:quota_edge])
+            selected.extend(mid[:quota_mid])
+            selected.extend(core[:quota_core])
+
+            if len(selected) >= max_patches:
+                break
+
+        if len(selected) < max_patches:
+            selected_set = set(selected)
+            for c in unique_candidates:
+                if c in selected_set:
+                    continue
+                selected.append(c)
+                if len(selected) >= max_patches:
+                    break
+
+        positions = sorted({(r0, c0) for r0, c0, _ in selected})
+
+    print(f"  Candidate patches after valid coverage filter: {len(positions)}")
     return positions
 
 def pad_patch(arr, target_size=HR_PATCH_SIZE):
@@ -176,6 +300,7 @@ def pad_patch(arr, target_size=HR_PATCH_SIZE):
     padded = np.zeros((target_size, target_size), dtype=arr.dtype)
     padded[:h, :w] = arr
     return padded
+
 
 # ---------------- PROCESS SCENE ----------------
 def find_scene_files(extract_dir):
@@ -345,6 +470,7 @@ def process_scene(hr_path, ls_tar, out_dir, patch_dir, metadata_dir):
             clip_to_hr(qa, hr_path, paths["qa_clip"])
             reproject_to_hr(paths["l8_clip"], hr_path, paths["l8_align"], Resampling.bilinear)
             reproject_to_hr(paths["qa_clip"], hr_path, paths["qa_align"], Resampling.nearest)
+            # clip_hr_temperatures(hr_path, paths["hr_clipped"])
             downsample_hr(hr_path, paths["hr_gt"])
 
             full_hr_path = os.path.join(full_hr_dir, f"{hr_id}.tif")
@@ -356,47 +482,69 @@ def process_scene(hr_path, ls_tar, out_dir, patch_dir, metadata_dir):
             scale = mtl_data["TEMPERATURE_MULT_BAND_ST_B10"]
             offset = mtl_data["TEMPERATURE_ADD_BAND_ST_B10"]
 
-            with rasterio.open(paths["l8_align"]) as lr_src, rasterio.open(paths["hr_gt"]) as hr_src, rasterio.open(paths["qa_align"]) as qa_src:
+            with rasterio.open(paths["l8_align"]) as lr_src, \
+                rasterio.open(paths["hr_gt"]) as hr_src, \
+                rasterio.open(paths["qa_align"]) as qa_src:
+
                 lr = lr_src.read(1)
-                hr = hr_src.read(1)
                 qa_arr = qa_src.read(1)
+
                 lr_t = lr_src.transform
                 hr_t = hr_src.transform
                 crs = hr_src.crs
                 hr_nodata = hr_src.nodata
+                hr_full = hr_src.read(1)
 
-                positions = compute_positions(hr, hr_nodata)
+                positions = compute_positions(hr_full, hr_nodata, HR_PATCH_SIZE, HR_STRIDE)
+
                 print(f"  Total candidate patches: {len(positions)}")
 
                 metadata = []
                 saved = 0
                 skipped = 0
+                skip_shape = 0
+                skip_cloud = 0
 
-                # Build aligned patch pairs and filter unusable patches.
                 for patch_num, (hr_row, hr_col) in enumerate(positions, start=1):
+
                     hr_patch = pad_patch(
-                        hr[hr_row:hr_row + HR_PATCH_SIZE, hr_col:hr_col + HR_PATCH_SIZE]
+                        hr_full[
+                            hr_row:hr_row + HR_PATCH_SIZE,
+                            hr_col:hr_col + HR_PATCH_SIZE
+                        ]
                     )
-                    if hr_nodata is not None and (hr_patch == hr_nodata).all():
+
+                    # skip empty patches
+                    if not np.any(build_valid_mask(hr_patch, hr_nodata)):
                         skipped += 1
                         continue
 
-                    # Convert HR patch bounds to LR indices to keep exact alignment.
+                    # map HR → LR
                     x_min = hr_t.c + hr_col * hr_t.a
                     y_max = hr_t.f + hr_row * hr_t.e
                     x_max = x_min + HR_PATCH_SIZE * hr_t.a
                     y_min = y_max + HR_PATCH_SIZE * hr_t.e
 
-                    lr_window = rasterio.windows.from_bounds(x_min, y_min, x_max, y_max, transform=lr_t)
+                    lr_window = rasterio.windows.from_bounds(
+                        x_min, y_min, x_max, y_max, transform=lr_t
+                    )
                     lr_window = lr_window.round_offsets().round_lengths()
 
                     lr_row = int(lr_window.row_off)
                     lr_col = int(lr_window.col_off)
-                    lr_patch = lr[lr_row:lr_row + LR_PATCH_SIZE, lr_col:lr_col + LR_PATCH_SIZE]
-                    qa_patch = qa_arr[lr_row:lr_row + LR_PATCH_SIZE, lr_col:lr_col + LR_PATCH_SIZE]
+
+                    lr_patch = lr[
+                        lr_row:lr_row + LR_PATCH_SIZE,
+                        lr_col:lr_col + LR_PATCH_SIZE
+                    ]
+
+                    qa_patch = qa_arr[
+                        lr_row:lr_row + LR_PATCH_SIZE,
+                        lr_col:lr_col + LR_PATCH_SIZE
 
                     if lr_patch.shape != (LR_PATCH_SIZE, LR_PATCH_SIZE):
                         skipped += 1
+                        skip_shape += 1
                         continue
 
                     cloud_only = extract_bit(qa_patch, BIT_CLOUD)
@@ -404,17 +552,22 @@ def process_scene(hr_path, ls_tar, out_dir, patch_dir, metadata_dir):
 
                     if cloud_only.mean() > 0.40 or shadow_only.mean() > 0.10:
                         skipped += 1
+                        skip_cloud += 1
                         continue
 
-                    lr_patch = lr_patch * scale + offset - 273.15  # Convert to Celsius
+                    # convert to Celsius
+                    lr_patch = lr_patch * scale + offset - 273.15
 
+                    # transforms
                     hr_patch_transform = from_origin(
                         hr_t.c + hr_col * hr_t.a,
                         hr_t.f + hr_row * hr_t.e,
                         abs(hr_t.a),
                         abs(hr_t.e),
                     )
+
                     lr_patch_transform = lr_src.window_transform(lr_window)
+
                     name = f"{hr_id}_{patch_num}.tif"
 
                     save_patch(
@@ -425,6 +578,7 @@ def process_scene(hr_path, ls_tar, out_dir, patch_dir, metadata_dir):
                         crs,
                         hr_nodata,
                     )
+
                     save_patch(
                         os.path.join(hr_out, name),
                         hr_patch,
@@ -445,6 +599,7 @@ def process_scene(hr_path, ls_tar, out_dir, patch_dir, metadata_dir):
                         "lr_transform": list(lr_patch_transform)[:6],
                         "crs": str(crs),
                     })
+
                     saved += 1
 
             # Save one metadata file per scene for easier debugging and merges.
@@ -452,7 +607,8 @@ def process_scene(hr_path, ls_tar, out_dir, patch_dir, metadata_dir):
             with open(meta_path, "w") as f:
                 json.dump(metadata, f, indent=2)
 
-        print(f"\nScene: {hr_id} | Saved: {saved} | Skipped: {skipped} | Metadata: {meta_path}")
+        # print(f"\nScene: {hr_id} | Saved: {saved} | Skipped: {skipped} | Metadata: {meta_path}")
+        print(f"\nScene: {hr_id} | Saved: {saved} | Skipped: {skipped} (shape:{skip_shape} cloud:{skip_cloud}) | Metadata: {meta_path}")
         return saved
 
     except Exception as e:
@@ -472,6 +628,7 @@ def main():
             "Supported formats: {'hr_name.tif': 'ls_name.tar'} or {'pairs': [{'hr_name': '...', 'candidates': [...]}]}"
         ),
     )
+    parser.add_argument("--debug-scene", default=None, help="Run only on this HR filename (e.g. 'DZM_2013.tif') for testing")
     args = parser.parse_args()
 
     patch_dir = os.path.join(args.out_dir, "tir_patches")
@@ -488,6 +645,16 @@ def main():
     scene_pairs = build_scene_pairs(hr_files, ls_tars, args.pairs_json)
     print(f"Processing {len(scene_pairs)} scene pairs...")
 
+    if args.debug_scene:
+        scene_pairs = [(hr, ls) for hr, ls in scene_pairs
+                    if os.path.basename(hr) == args.debug_scene]
+        if not scene_pairs:
+            raise ValueError(f"--debug-scene '{args.debug_scene}' not found in pairs")
+        print(f"DEBUG MODE: running single scene {scene_pairs[0][0]}")
+        # run directly, not in parallel
+        process_scene(*scene_pairs[0], args.out_dir, patch_dir, metadata_dir)
+        return
+
     with ProcessPoolExecutor(max_workers=args.workers) as ex:
         futures = [
             ex.submit(process_scene, hr, ls, args.out_dir, patch_dir, metadata_dir)
@@ -502,10 +669,16 @@ if __name__ == "__main__":
     main()
 
 # usage
-# python scripts/preprocess/prep.py \
+# python scripts/preprocess/prep_copy.py \
 #     --hr-folder TIR_data/HR \
 #     --ls-folder TIR_data/LR \
 #     --out-dir TIR_data/processed \
 #     --pairs-json TIR_data/processed/hr_lr_pairs.json \
-#     --workers 4
+#     --workers 2
 
+# python scripts/preprocess/prep_copy.py \
+#     --hr-folder TIR_data/HR \
+#     --ls-folder TIR_data/LR \
+#     --out-dir TIR_data/processed \
+#     --pairs-json TIR_data/processed/hr_lr_pairs.json \
+#     --debug-scene BAS-2025_TEMP_0.40_v11.tif
