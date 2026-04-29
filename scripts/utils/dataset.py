@@ -18,39 +18,36 @@ def compute_mean_std(metadata: pd.DataFrame) -> tuple[float, float]:
             nodata = src.nodata
             lr     = src.read(1).astype(np.float32)
 
-        valid = lr[lr != nodata] if nodata is not None else lr[~np.isnan(lr)]
+        valid_mask = ~np.isnan(lr)
+        if nodata is not None:
+            valid_mask &= ~np.isclose(lr, nodata, rtol=0, atol=1e30)
+        valid = lr[valid_mask]
         if len(valid) == 0: continue
 
         pixel_sum   += valid.sum()
         pixel_sq    += (valid ** 2).sum()
         pixel_count += len(valid)
 
-
     mean = pixel_sum / pixel_count
     std  = np.sqrt(max(pixel_sq / pixel_count - mean ** 2, 0.0))
     print(f"  Train mean : {mean:.4f} °C  |  std : {std:.4f} °C")
     return float(mean), float(std)
 
-def compute_data_range(
-    metadata: pd.DataFrame,
-    low_percentile: float = 1.0,
-    high_percentile: float = 99.0,
-    min_range: float = 1e-6,
-) -> float:
-    """Estimate a robust HR data range from train-only patches using percentiles.
-    Uses 1st-99th percentile to avoid outlier skew from nodata edges or hot pixels.
-    """
+def compute_data_range(metadata, low_percentile=1.0, high_percentile=99.0, min_range=1e-6):
     values = []
     for _, row in metadata.iterrows():
         with rasterio.open(row["hr_path"]) as src:
             hr = src.read(1).astype(np.float32)
             nodata = src.nodata
+            
+            # handle both nan and nodata
+            valid = ~np.isnan(hr)
             if nodata is not None:
-                valid = hr[hr != nodata]
-            else:
-                valid = hr[~np.isnan(hr)]
-            if valid.size > 0:
-                values.append(valid)
+                valid &= ~np.isclose(hr, nodata, rtol=0, atol=1e30)
+            
+            hr_valid = hr[valid]
+            if hr_valid.size > 0:
+                values.append(hr_valid)
 
     if not values:
         raise ValueError("No valid HR pixels found to compute data range.")
@@ -60,10 +57,8 @@ def compute_data_range(
     high = np.percentile(values, high_percentile)
     data_range = max(float(high - low), float(min_range))
 
-    print(
-        f"[INFO] Train data range ({low_percentile:.0f}-{high_percentile:.0f}th percentile): "
-        f"{low:.2f}°C to {high:.2f}°C → range={data_range:.2f}°C"
-    )
+    print(f"[INFO] Train data range ({low_percentile:.0f}-{high_percentile:.0f}th percentile): "
+          f"{low:.2f}°C to {high:.2f}°C → range={data_range:.2f}°C")
     return data_range
 
 # ------------ Data Augmentations ----------------
@@ -109,36 +104,36 @@ class TIRNoise:
         return lr, hr, mask
 
 
-class ThermalShift:
-    """
-    Global diurnal shift applied to both (physically consistent).
-    Optional inter-sensor bias applied to LR only. ??sensor bias??
-    """
-    def __init__(self, range_c=1.0):  #sensor_bias_range=0.5
-        self.range_c = range_c
-        # self.sensor_bias = sensor_bias_range
+# class ThermalShift:
+#     """
+#     Global diurnal shift applied to both (physically consistent).
+#     Optional inter-sensor bias applied to LR only. ??sensor bias??
+#     """
+#     def __init__(self, range_c=1.0):  #sensor_bias_range=0.5
+#         self.range_c = range_c
+#         # self.sensor_bias = sensor_bias_range
 
-    def __call__(self, lr, hr, mask):
-        shift = random.uniform(-self.range_c, self.range_c)
-        # bias = random.uniform(-self.sensor_bias, self.sensor_bias)
-        return lr + shift , hr + shift , mask  #+ bias
+#     def __call__(self, lr, hr, mask):
+#         shift = random.uniform(-self.range_c, self.range_c)
+#         # bias = random.uniform(-self.sensor_bias, self.sensor_bias)
+#         return lr + shift , hr + shift , mask  #+ bias
 
 
-class ContrastScaling:
-    """
-    Scales thermal gradients around each image's own mean. ??physically meaningful??
-    """
-    def __init__(self, range_alpha=(0.90, 1.10)):
-        self.range_alpha = range_alpha
+# class ContrastScaling:
+#     """
+#     Scales thermal gradients around each image's own mean. ??physically meaningful??
+#     """
+#     def __init__(self, range_alpha=(0.90, 1.10)):
+#         self.range_alpha = range_alpha
 
-    def __call__(self, lr, hr, mask):
-        if random.random() > 0.5:
-            alpha = random.uniform(*self.range_alpha)
-            lr_m = lr.mean()
-            hr_m = hr.mean()
-            lr = (lr - lr_m) * alpha + lr_m
-            hr = (hr - hr_m) * alpha + hr_m
-        return lr, hr, mask
+#     def __call__(self, lr, hr, mask):
+#         if random.random() > 0.5:
+#             alpha = random.uniform(*self.range_alpha)
+#             lr_m = lr.mean()
+#             hr_m = hr.mean()
+#             lr = (lr - lr_m) * alpha + lr_m
+#             hr = (hr - hr_m) * alpha + hr_m
+#         return lr, hr, mask
 
 
 class BlurAugment:
@@ -195,26 +190,57 @@ class SRDataset(Dataset):
             nodata_hr = src.nodata
 
         # Handle Nodata/NaN 
+        # fill = float(self.mean) if self.mean is not None else 0.0
+        # hr_mask = (hr != np.float32(nodata_hr)).astype(np.float32) if nodata_hr is not None else (~np.isnan(hr)).astype(np.float32)
+        # lr = np.nan_to_num(lr, nan=fill) if nodata_lr is None else np.where(lr == np.float32(nodata_lr), fill, lr)
+        # hr = np.nan_to_num(hr, nan=fill) if nodata_hr is None else np.where(hr == np.float32(nodata_hr), fill, hr)
         fill = float(self.mean) if self.mean is not None else 0.0
 
-        hr_mask = (hr != np.float32(nodata_hr)).astype(np.float32) if nodata_hr is not None else (~np.isnan(hr)).astype(np.float32)
-        lr = np.nan_to_num(lr, nan=fill) if nodata_lr is None else np.where(lr == np.float32(nodata_lr), fill, lr)
-        hr = np.nan_to_num(hr, nan=fill) if nodata_hr is None else np.where(hr == np.float32(nodata_hr), fill, hr)
+        def get_clean_data(arr, nd):
+            # Create a mask: True where data is VALID
+            mask = np.ones_like(arr, dtype=bool)
+            if nd is not None:
+                # Use atol to catch floating point nodata like -3.4e+38
+                mask &= ~np.isclose(arr, nd, atol=1e-3)
+            mask &= np.isfinite(arr)
+            
+            # Fill invalid areas with the mean
+            # When we do (cleaned - mean)/std, these areas become 0.0
+            cleaned_arr = np.where(mask, arr, fill)
+            return cleaned_arr, mask.astype(np.float32)
 
-        # Patch Extraction (Only if Training)
+        lr, lr_mask = get_clean_data(lr, nodata_lr)
+        hr, hr_mask = get_clean_data(hr, nodata_hr)
+
+        # Force NoData pixels to the MEAN value 
+        # This ensures (pixel - mean) / std becomes exactly 0.0 later
+        lr = np.where(lr_mask == 1.0, lr, fill)
+        hr = np.where(hr_mask == 1.0, hr, fill)
+
         if self.is_train:
             ih, iw = lr.shape[:2]
-            # Ensure we don't pick a starting point that goes out of bounds
-            iy = random.randint(0, ih - self.patch_size)
-            ix = random.randint(0, iw - self.patch_size)
             
+            # We try up to 20 times to find a crop that actually overlaps with your HR strip
+            for _ in range(20):
+                iy = random.randint(0, ih - self.patch_size)
+                ix = random.randint(0, iw - self.patch_size)
+                
+                # Calculate where this would land on the HR / Mask
+                iy_h, ix_h = iy * self.scale, ix * self.scale
+                ph_h = self.patch_size * self.scale
+                
+                # Look at the mask for this specific random crop
+                target_mask = hr_mask[iy_h : iy_h + ph_h, ix_h : ix_h + ph_h]
+                
+                # Does this crop contain enough actual HR data? 
+                # (e.g., more than 20% of the pixels are not "No Data")
+                if target_mask.mean() > 0.2: 
+                    break 
+
+            # slicing the LR, HR, and Mask to the same random crop
             lr = lr[iy : iy + self.patch_size, ix : ix + self.patch_size]
-            
-            # Scale coordinates for HR and Mask
-            iy_h, ix_h = iy * self.scale, ix * self.scale
-            ph_h = self.patch_size * self.scale
             hr = hr[iy_h : iy_h + ph_h, ix_h : ix_h + ph_h]
-            hr_mask = hr_mask[iy_h : iy_h + ph_h, ix_h : ix_h + ph_h]
+            hr_mask = target_mask
 
         # Apply Remaining Augmentations 
         if self.transform is not None:

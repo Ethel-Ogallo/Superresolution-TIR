@@ -1,6 +1,7 @@
 # swinir.yaml
 model_class: SwinIRModule
 img_size: 48
+patch_size: 48
 window_size: 8
 embed_dim: 180
 depths: [6, 6, 6, 6, 6, 6]

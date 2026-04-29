@@ -41,8 +41,8 @@ from scripts.utils.dataset import (
     GeoAugment,
     TIRNoise,
     BlurAugment,
-    ContrastScaling,
-    ThermalShift,
+    # ContrastScaling,
+    # ThermalShift,
 )
 
 
@@ -149,28 +149,35 @@ def run_fold(
     mean, std  = compute_mean_std(train_df)
     data_range = compute_data_range(train_df)
 
+    train_patch_size = model_cfg.get("patch_size", 48) 
+    if "img_size" in model_cfg and args.model in ["swinir", "hat"]:
+        train_patch_size = model_cfg["img_size"]
+
     train_aug = Compose([
         GeoAugment(),
         TIRNoise(std=std, p=0.5),
         BlurAugment(sigma_range=(0.5, 1.2)),
     ])
 
-    train_ds = SRDataset(train_df, mean=mean, std=std, is_train=True,  transforms=train_aug)
-    val_ds   = SRDataset(val_df,   mean=mean, std=std, is_train=False, transforms=None)
-    test_ds  = SRDataset(test_df,  mean=mean, std=std, is_train=False, transforms=None)
+    train_ds = SRDataset(train_df, mean=mean, std=std, patch_size=train_patch_size,
+                         is_train=True,  transforms=train_aug)
+    val_ds   = SRDataset(val_df,   mean=mean, std=std,
+                         is_train=False, transforms=None)
+    test_ds  = SRDataset(test_df,  mean=mean, std=std, 
+                         is_train=False, transforms=None)
 
     loader_kw    = dict(num_workers=args.num_workers, pin_memory=True)
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,  **loader_kw)
     val_loader   = DataLoader(val_ds,   batch_size=args.batch_size, shuffle=False, **loader_kw)
     test_loader  = DataLoader(test_ds,  batch_size=1,               shuffle=False, **loader_kw)
 
-    # ── Build model ──────────────────────────────────────────────────── #
+    # Build model 
     cls           = get_model_class(args.model)
     explicit_keys = {
         "mean", "std", "learning_rate", "patience", "pretrained_path",
         "pretrained_g_path", "pretrained_d_path",
         "freeze_backbone", "bb_lr_scale", "lambda_grad", "model_class",
-        "precision", "data_range",
+        "precision", "data_range", "patch_size", "img_size",
     }
     model_hparams = {k: v for k, v in model_cfg.items() if k not in explicit_keys}
     init_params   = inspect.signature(cls.__init__).parameters
@@ -181,7 +188,7 @@ def run_fold(
     precision = model_cfg.get("precision", "bf16-mixed")
     print(f"[INFO] Using precision: {precision} for {args.model}")
 
-    # ── RealESRGAN takes two pretrained paths; all other models take one ─ #
+    #  RealESRGAN takes two pretrained paths
     if args.model == "real_esrgan":
         model = cls(
             mean=mean, std=std,

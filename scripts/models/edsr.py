@@ -32,18 +32,10 @@ class EDSRModule(pl.LightningModule):
         n_blocks:          int   = 16,
         freeze_backbone:   bool  = True,
         lambda_grad:       float = 0.1,
-        # ── FIX: data_range is now a proper param instead of hardcoded ──
-        # For Rhône corridor TIR data (°C): river ~10-20°C, asphalt/roofs up to ~55-60°C
-        # Set this from your dataset global min/max: data_range = T_max - T_min
-        # Run the debug print below once to confirm the real span.
         data_range: float = 70.0,
     ):
         super().__init__()
         self.save_hyperparameters()
-        # ── FIX: DATA_RANGE now comes from the param, not hardcoded ──
-        # Old code had self.DATA_RANGE = 80.0 which was wrong for a river corridor.
-        # Realistic TIR range for Rhône (water + asphalt + roofs) is ~50°C.
-        # Override by passing data_range=X to the constructor or your config yaml.
         self.DATA_RANGE = float(data_range)
         print(f"[INFO] DATA_RANGE set to {self.DATA_RANGE}°C ")
 
@@ -151,58 +143,69 @@ class EDSRModule(pl.LightningModule):
         sr = self.denormalize(sr_img)
         hr = self.denormalize(hr_img)
 
-        # Reconstruction loss (masked L1)
-        abs_err = torch.abs(sr - hr) * hr_mask
-        recon_loss = abs_err.sum() / torch.clamp(hr_mask.sum(), min=1.0)
+        # # Reconstruction loss (masked L1)
+        # abs_err = torch.abs(sr - hr) * hr_mask
+        # recon_loss = abs_err.sum() / torch.clamp(hr_mask.sum(), min=1.0)
 
-        # Gradient loss
+        # # Gradient loss
+        # if self.hparams.lambda_grad > 0:
+        #     grad_loss = gradient_loss(sr, hr, hr_mask)
+        #     loss = recon_loss + self.hparams.lambda_grad * grad_loss
+        # else:
+        #     grad_loss = torch.tensor(0.0, device=sr.device)
+        #     loss = recon_loss
+
+        # >>>>> NEW START
+        # 1. Check if we have any valid data in this batch
+        mask_sum = hr_mask.sum()
+        if mask_sum < 1.0:
+            # Multiply the model output by 0.0
+            # This 'chains' the model to the loss so the scaler stays happy,
+            # but the actual gradient value will be 0, so no weights change.
+            return sr_img.sum() * 0.0
+
+        # 2. Reconstruction loss (masked L1)
+        abs_err = torch.abs(sr - hr) * hr_mask
+        recon_loss = abs_err.sum() / mask_sum
+
+        # 3. Gradient loss (using your existing function)
         if self.hparams.lambda_grad > 0:
             grad_loss = gradient_loss(sr, hr, hr_mask)
             loss = recon_loss + self.hparams.lambda_grad * grad_loss
         else:
             grad_loss = torch.tensor(0.0, device=sr.device)
             loss = recon_loss
+        # >>>NEW END
 
         # METRICS 
         with torch.no_grad():
+            # 1. Focus only on the area with the flight strip
             sr_crop, mask_crop = self.crop_to_valid_bbox(sr, hr_mask)
             hr_crop, _ = self.crop_to_valid_bbox(hr, hr_mask)
-
-            # FIX : avoid extreme / invalid values affecting SSIM
-            ssr_crop = torch.nan_to_num(sr_crop, nan=0.0, posinf=0.0, neginf=0.0)
-            hr_crop = torch.nan_to_num(hr_crop, nan=0.0, posinf=0.0, neginf=0.0)
 
             valid = (mask_crop > 0.5)
 
             if valid.sum() == 0:
-                psnr_val = torch.tensor(0.0, device=sr.device)
-                ssim_val = torch.tensor(0.0, device=sr.device)
+                psnr_val = ssim_val = torch.tensor(0.0, device=sr.device)
             else:
-                # PSNR (unchanged — correct)
-                sr_valid = sr_crop[valid].unsqueeze(0).unsqueeze(0)
-                hr_valid = hr_crop[valid].unsqueeze(0).unsqueeze(0)
-                psnr_val = getattr(self, f"{stage}_psnr")(sr_valid, hr_valid)
+                # 2. Prepare images for metrics
+                # We zero out everything outside the mask for BOTH images.
+                # This makes the backgrounds identical so SSIM ignores them.
+                sr_clean = sr_crop * mask_crop
+                hr_clean = hr_crop * mask_crop
 
-                # SSIM
-                h, w = sr_crop.shape[-2], sr_crop.shape[-1]
+                # 3. PSNR Calculation
+                # Standard PSNR on the masked images
+                psnr_val = getattr(self, f"{stage}_psnr")(sr_clean, hr_clean)
+
+                # 4. SSIM Calculation
+                h, w = sr_crop.shape[-2:]
                 if min(h, w) < 11:
                     ssim_val = torch.tensor(0.0, device=sr.device)
                 else:
-                    # ❌ OLD (problematic):
-                    # fill_val = hr_crop[valid].mean()
-                    # sr_for_ssim = torch.where(valid, sr_crop, fill_val)
-                    # hr_for_ssim = torch.where(valid, hr_crop, fill_val)
-
-                    # FIX 2: zero-fill instead of mean (avoids biasing structure)
-                    sr_for_ssim = sr_crop.clone()
-                    hr_for_ssim = hr_crop.clone()
-
-                    sr_for_ssim[~valid] = 0
-                    hr_for_ssim[~valid] = 0
-
-                    # FIX 3: ensure proper shape (B, C, H, W) — usually already OK
-                    # (no change needed unless debugging)
-                    ssim_val = getattr(self, f"{stage}_ssim")(sr_for_ssim, hr_for_ssim)
+                    # By having 0 in the background of both, SSIM focuses 
+                    # only on the structural difference of the river strip.
+                    ssim_val = getattr(self, f"{stage}_ssim")(sr_clean, hr_clean)
 
             if valid.sum() == 0:
                 mae_val = torch.tensor(0.0, device=sr.device)

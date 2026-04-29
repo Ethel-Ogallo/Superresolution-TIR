@@ -226,66 +226,74 @@ class HATModule(pl.LightningModule):
         return sr
 
     # ------------------- Shared step (train / val / test)  -------------------                               
-    def _shared_step(self, batch, batch_idx: int, stage: str):
+    def _shared_step(self, batch, stage: str):
         lr_img, hr_img, hr_mask = batch
         sr_img = self(lr_img)
 
         sr = self.denormalize(sr_img)
         hr = self.denormalize(hr_img)
 
-        # Guard against NaNs / Infs propagating into loss
-        sr = torch.nan_to_num(sr, nan=0.0, posinf=1e6, neginf=-1e6)
-        hr = torch.nan_to_num(hr, nan=0.0, posinf=1e6, neginf=-1e6)
+        # >>>>> NEW START
+        # 1. Check if we have any valid data in this batch
+        mask_sum = hr_mask.sum()
+        if mask_sum < 1.0:
+            # Multiply the model output by 0.0
+            # This 'chains' the model to the loss so the scaler stays happy,
+            # but the actual gradient value will be 0, so no weights change.
+            return sr_img.sum() * 0.0
 
-        # Masked L1 reconstruction loss (only valid pixels contribute)
-        abs_err    = torch.abs(sr - hr) * hr_mask
-        recon_loss = abs_err.sum() / torch.clamp(hr_mask.sum(), min=1.0)
+        # 2. Reconstruction loss (masked L1)
+        abs_err = torch.abs(sr - hr) * hr_mask
+        recon_loss = abs_err.sum() / mask_sum
 
-        # Gradient loss 
+        # 3. Gradient loss (using your existing function)
         if self.hparams.lambda_grad > 0:
             grad_loss = gradient_loss(sr, hr, hr_mask)
-            loss      = recon_loss + self.hparams.lambda_grad * grad_loss
+            loss = recon_loss + self.hparams.lambda_grad * grad_loss
         else:
             grad_loss = torch.tensor(0.0, device=sr.device)
-            loss      = recon_loss
+            loss = recon_loss
+        # >>>NEW END
 
-        # Final NaN guard on losses
-        recon_loss = torch.nan_to_num(recon_loss, nan=0.0)
-        grad_loss  = torch.nan_to_num(grad_loss,  nan=0.0)
-        loss       = torch.nan_to_num(loss,        nan=0.0)
-
-        # --------------- Metrics -------------------
+        # METRICS 
         with torch.no_grad():
+            # 1. Focus only on the area with the flight strip
             sr_crop, mask_crop = self.crop_to_valid_bbox(sr, hr_mask)
-            hr_crop, _         = self.crop_to_valid_bbox(hr, hr_mask)
-            valid_mask         = (mask_crop > 0.5)  # (B, 1, H, W)
+            hr_crop, _ = self.crop_to_valid_bbox(hr, hr_mask)
 
-            if valid_mask.sum() == 0:
-                psnr_val = torch.tensor(0.0, device=sr.device)
-                ssim_val = torch.tensor(0.0, device=sr.device)
-                mae_val  = torch.tensor(0.0, device=sr.device)
+            valid = (mask_crop > 0.5)
+
+            if valid.sum() == 0:
+                psnr_val = ssim_val = torch.tensor(0.0, device=sr.device)
             else:
-                mae_val = (sr_crop - hr_crop).abs()[valid_mask].mean()
+                # 2. Prepare images for metrics
+                # We zero out everything outside the mask for BOTH images.
+                # This makes the backgrounds identical so SSIM ignores them.
+                sr_clean = sr_crop * mask_crop
+                hr_clean = hr_crop * mask_crop
 
-                # Zero out invalid pixels so they don't skew PSNR/SSIM
-                sr_for_metric = sr_crop.clone()
-                hr_for_metric = hr_crop.clone()
-                sr_for_metric[~valid_mask] = hr_for_metric[~valid_mask]
+                # 3. PSNR Calculation
+                # Standard PSNR on the masked images
+                psnr_val = getattr(self, f"{stage}_psnr")(sr_clean, hr_clean)
 
-                psnr_val = getattr(self, f"{stage}_psnr")(
-                    sr_for_metric, hr_for_metric
-                )
-
+                # 4. SSIM Calculation
                 h, w = sr_crop.shape[-2:]
-                if h < 11 or w < 11:
-                    # SSIM uses an 11×11 window — skip for tiny crops
+                if min(h, w) < 11:
                     ssim_val = torch.tensor(0.0, device=sr.device)
                 else:
-                    ssim_val = getattr(self, f"{stage}_ssim")(
-                        sr_for_metric, hr_for_metric
-                    )
+                    # By having 0 in the background of both, SSIM focuses 
+                    # only on the structural difference of the river strip.
+                    ssim_val = getattr(self, f"{stage}_ssim")(sr_clean, hr_clean)
 
-        # --------- Logging ------------------
+            if valid.sum() == 0:
+                mae_val = torch.tensor(0.0, device=sr.device)
+            else:
+                err = sr_crop - hr_crop
+                err = err[valid]
+
+                mae_val = err.abs().mean()
+
+        # Logging
         self.log(f"{stage}_loss",       loss,       on_epoch=True, prog_bar=True)
         self.log(f"{stage}_recon_loss", recon_loss, on_epoch=True)
         self.log(f"{stage}_grad_loss",  grad_loss,  on_epoch=True)
@@ -296,14 +304,14 @@ class HATModule(pl.LightningModule):
         return loss
 
     def training_step(self, batch, batch_idx):
-        return self._shared_step(batch, batch_idx, "train")
+        return self._shared_step(batch, "train")
 
     def validation_step(self, batch, batch_idx):
-        return self._shared_step(batch, batch_idx, "val")
+        return self._shared_step(batch, "val")
 
     def test_step(self, batch, batch_idx):
-        return self._shared_step(batch, batch_idx, "test")
-
+        return self._shared_step(batch, "test")
+    
     #  -----------------  Optimiser -----------------
     def configure_optimizers(self):
         backbone_params, head_params = [], []

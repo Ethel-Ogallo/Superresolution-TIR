@@ -7,8 +7,8 @@ Architecture:
   Discriminator: UNetDiscriminatorSN (basicsr.archs.discriminator_arch)
 
 Loss surface:
-  L1 reconstruction (masked)      — always on
-  Spatial gradient loss            — lambda_grad      (mirrors swinir.py)
+  L1 reconstruction (masked)      
+  Spatial gradient loss            — lambda_grad      
   Perceptual / VGG feature loss   — lambda_perceptual (basicsr PerceptualLoss)
   Adversarial loss                 — lambda_adversarial
 
@@ -40,9 +40,7 @@ from torchmetrics.image import (
 )
 from scripts.utils.loss import gradient_loss
 
-# --------------------------------------------------------------------------- #
-#  RealESRGANModule                                                            #
-# --------------------------------------------------------------------------- #
+#  RealESRGANModule                                                        
 class RealESRGANModule(pl.LightningModule):
     _HEAD_KEYWORDS = [
         "conv_last", "conv_up1", "conv_up2",
@@ -265,7 +263,6 @@ class RealESRGANModule(pl.LightningModule):
                          hr_mask: torch.Tensor, stage: str):
         """
         Shared PSNR / SSIM / MAE computation used by val and test steps.
-        Mirrors swinir.py crop_to_valid_bbox strategy exactly.
         """
         sr_crop, mask_crop = self.crop_to_valid_bbox(sr, hr_mask)
         hr_crop, _         = self.crop_to_valid_bbox(hr, hr_mask)

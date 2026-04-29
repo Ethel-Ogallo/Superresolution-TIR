@@ -23,3 +23,5 @@ __pycache__/
 # OS files
 .DS_Store4
 slurm-*.out
+
+stuff.txt

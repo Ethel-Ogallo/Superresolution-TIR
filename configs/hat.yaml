@@ -1,7 +1,8 @@
 # hat_config.yaml
 model_class: HATModule
-img_size:       64         # was 128, matches LR patch size
-window_size:    16         # 64 % 16 == 0 ✓
+img_size:       64      
+patch_size:     64         
+window_size:    16         
 embed_dim:      180
 depths:         [6, 6, 6, 6, 6, 6]
 num_heads:      [6, 6, 6, 6, 6, 6]
