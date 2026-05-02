@@ -28,7 +28,9 @@ python -m scripts.training.train \
     --patience 30 \
     --batch_size 2  \
     --num_workers 2 \
-    --run_name exp4_fr_aux \
+    --use_aux \
+    --fusion_mode concat \
+    --run_name exp7_fr_aux \
     --group EDSR \
     --project TIR_sisr \
     --freeze_backbone 
@@ -38,7 +40,6 @@ python -m scripts.training.train \
 #     --model swinir \
 #     --metadata_json data/full_metadata.json \
 #     --pretrained /share/home/e2406751/Superresolution-TIR/data/pretrained/SwinIR_classical_x4.pth \
-#     --random_split \
 #     --lr 1e-4 \
 #     --lambda_grad 0.1 \
 #     --bb_lr_scale 0.1 \
@@ -57,7 +58,6 @@ python -m scripts.training.train \
 #     --model hat \
 #     --metadata_json data/full_metadata.json \
 #     --pretrained /share/home/e2406751/Superresolution-TIR/data/pretrained/HAT_imagenet_x4.pth \
-#     --random_split \
 #     --lr 1e-4 \
 #     --lambda_grad 0.1 \
 #     --bb_lr_scale 0.1 \
@@ -76,7 +76,6 @@ python -m scripts.training.train \
 #     --metadata_json data/full_metadata.json \
 #     --pretrained /share/home/e2406751/Superresolution-TIR/data/pretrained/RealESRGAN_generator_x4.pth \
 #     --pretrained_d /share/home/e2406751/Superresolution-TIR/data/pretrained/RealESRGAN_discriminator_x4.pth \
-#     --random_split \
 #     --lr 1e-4 \
 #     --lambda_grad 0.1 \
 #     --bb_lr_scale 0.1 \

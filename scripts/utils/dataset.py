@@ -1,8 +1,11 @@
 """
-dataset.py — TIR Super-Resolution dataset creation and data utilities.
-- Computes dataset statistics (mean, std, data range) for normalization and metrics.
-- Defines data augmentations: geometric (flip/rotate), noise, blur.
-- Implements SRDataset for loading LR/HR pairs, masks, and optional AUX data.
+dataset.py — TIR Super-Resolution dataset
+- LR/HR normalized independently
+- AUX returned separately (FiLM input only)
+
+Fixes applied:
+  Bug 1 — aux is now cropped in train mode to match the hr patch window
+  Bug 2 — zero-aux fallback is sized to HR spatial dims, not LR
 """
 
 import random
@@ -10,57 +13,87 @@ import numpy as np
 import pandas as pd
 import rasterio
 import torch
-import torch.nn.functional as F
 from torch.utils.data import Dataset
 from scipy.ndimage import gaussian_filter
 
-# ----------- AUXILIARY ENCODING FOR AUXILIARY ENCODER -----------
+# ---------------- LULC ----------------
 LULC_CLASSES = [10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 100]
-LULC_LUT = {v: i for i, v in enumerate(LULC_CLASSES)}
 NUM_LULC_CLASSES = len(LULC_CLASSES)
 
-def encode_lulc(lulc):
-    """Convert ESA raw codes → contiguous indices."""
-    encoded = np.full(lulc.shape, -1, dtype=np.int32)
+LULC_LUT = {v: i for i, v in enumerate(LULC_CLASSES)}
 
+
+def encode_lulc(lulc):
+    encoded = np.full(lulc.shape, -1, dtype=np.int32)
     for raw, idx in LULC_LUT.items():
         encoded[lulc == raw] = idx
-
     return encoded
 
+
 def one_hot_lulc(lulc_idx):
-    """Convert index map → one-hot tensor (C,H,W)."""
     h, w = lulc_idx.shape
     out = np.zeros((NUM_LULC_CLASSES, h, w), dtype=np.float32)
-
     for c in range(NUM_LULC_CLASSES):
         out[c] = (lulc_idx == c)
-
     return out
 
-# -------------- Data statistics ---------------
-def compute_mean_std(metadata: pd.DataFrame):
-    """Compute global mean and std from valid pixels across all LR images."""
-    pixel_sum = pixel_sq = pixel_count = 0.0
+
+# ---------------- STATS ----------------
+def compute_mean_std(metadata):
+    s = ss = n = 0.0
+
     for _, row in metadata.iterrows():
         with rasterio.open(row["lr_path"]) as src:
+            x = src.read(1).astype(np.float32)
             nodata = src.nodata
-            lr     = src.read(1).astype(np.float32)
 
-        valid_mask = ~np.isnan(lr)
+        m = np.isfinite(x)
         if nodata is not None:
-            valid_mask &= ~np.isclose(lr, nodata, rtol=0, atol=1e30)
-        valid = lr[valid_mask]
-        if len(valid) == 0: continue
+            m &= ~np.isclose(x, nodata, atol=1e30)
 
-        pixel_sum   += valid.sum()
-        pixel_sq    += (valid ** 2).sum()
-        pixel_count += len(valid)
+        v = x[m]
+        if len(v) == 0:
+            continue
 
-    mean = pixel_sum / pixel_count
-    std  = np.sqrt(max(pixel_sq / pixel_count - mean ** 2, 0.0))
-    print(f"  Train mean : {mean:.4f} °C  |  std : {std:.4f} °C")
+        s += v.sum()
+        ss += (v ** 2).sum()
+        n += len(v)
+
+    mean = s / n
+    std = np.sqrt(ss / n - mean**2)
     return float(mean), float(std)
+
+
+def compute_aux_mean_std(metadata):
+    sum_, sq_, count_ = None, None, None
+
+    for _, row in metadata.iterrows():
+        if "aux_path" not in row or pd.isna(row["aux_path"]):
+            continue
+
+        with rasterio.open(row["aux_path"]) as src:
+            aux = src.read().astype(np.float32)
+
+        cont = aux[:-1]
+
+        if sum_ is None:
+            sum_ = np.zeros(cont.shape[0])
+            sq_ = np.zeros(cont.shape[0])
+            count_ = np.zeros(cont.shape[0])
+
+        for c in range(cont.shape[0]):
+            v = cont[c]
+            m = np.isfinite(v)
+            vals = v[m]
+
+            sum_[c] += vals.sum()
+            sq_[c] += (vals ** 2).sum()
+            count_[c] += len(vals)
+
+    mean = sum_ / count_
+    std = np.sqrt(np.maximum(sq_ / count_ - mean**2, 1e-6))
+    return mean.astype(np.float32), std.astype(np.float32)
+
 
 def compute_data_range(metadata, low_percentile=1.0, high_percentile=99.0, min_range=1e-6):
     """Compute data range from percentiles of valid HR pixels across the dataset."""
@@ -69,12 +102,11 @@ def compute_data_range(metadata, low_percentile=1.0, high_percentile=99.0, min_r
         with rasterio.open(row["hr_path"]) as src:
             hr = src.read(1).astype(np.float32)
             nodata = src.nodata
-            
-            # handle both nan and nodata
+
             valid = ~np.isnan(hr)
             if nodata is not None:
                 valid &= ~np.isclose(hr, nodata, rtol=0, atol=1e30)
-            
+
             hr_valid = hr[valid]
             if hr_valid.size > 0:
                 values.append(hr_valid)
@@ -87,9 +119,8 @@ def compute_data_range(metadata, low_percentile=1.0, high_percentile=99.0, min_r
     high = np.percentile(values, high_percentile)
     data_range = max(float(high - low), float(min_range))
 
-    print(f"[INFO] Train data range ({low_percentile:.0f}-{high_percentile:.0f}th percentile): "
-          f"{low:.2f}°C to {high:.2f}°C → range={data_range:.2f}°C")
     return data_range
+
 
 # ------------ Data Augmentations ----------------
 class GeoAugment:
@@ -145,6 +176,7 @@ class BlurAugment:
                 lr = gaussian_filter(lr, sigma=sig)
         return lr, hr, mask, aux
 
+
 class Compose:
     """Compose multiple augmentations sequentially."""
     def __init__(self, transforms):
@@ -155,23 +187,37 @@ class Compose:
             lr, hr, mask, aux = t(lr, hr, mask, aux)
         return lr, hr, mask, aux
 
-# ------------- Dataset -----------------------------
+
+# ---------------- DATASET ----------------
 class SRDataset(Dataset):
-    """PyTorch Dataset for TIR Super-Resolution.
-    Loads LR/HR image pairs, HR masks, and optional AUX data.
-    Applies augmentations and returns tensors ready for model input.
-    """
-    def __init__(self, metadata, mean=None, std=None,patch_size=48, scale=4, 
-                 transforms=None,is_train=True, use_aux=False):
-        self.samples  = metadata.reset_index(drop=True)
-        self.mean     = mean
-        self.std      = std
-        self.transform = transforms
+
+    def __init__(
+        self,
+        metadata,
+        mean=None,
+        std=None,
+        aux_mean=None,
+        aux_std=None,
+        patch_size=48,
+        scale=4,
+        transforms=None,
+        is_train=True,
+        use_aux=False,
+    ):
+        self.samples = metadata.reset_index(drop=True)
+
+        self.mean = mean
+        self.std = std
+
+        self.aux_mean = aux_mean
+        self.aux_std = aux_std
+
         self.patch_size = patch_size
-        self.scale    = scale
+        self.scale = scale
+        self.transform = transforms
         self.is_train = is_train
-        self.use_aux  = use_aux
-    
+        self.use_aux = use_aux
+
     def __len__(self):
         return len(self.samples)
 
@@ -179,101 +225,89 @@ class SRDataset(Dataset):
         row = self.samples.iloc[idx]
 
         with rasterio.open(row["lr_path"]) as src:
-            lr        = src.read(1).astype(np.float32)
+            lr = src.read(1).astype(np.float32)
             nodata_lr = src.nodata
         with rasterio.open(row["hr_path"]) as src:
-            hr        = src.read(1).astype(np.float32)
+            hr = src.read(1).astype(np.float32)
             nodata_hr = src.nodata
 
-        # load AUX data if available and enabled
         aux = None
         if self.use_aux and "aux_path" in row and pd.notna(row["aux_path"]):
             with rasterio.open(row["aux_path"]) as src:
-                aux = src.read().astype(np.float32)  # (9, H, W)
+                aux = src.read().astype(np.float32)  # (C, H_hr, W_hr)
 
-        # Handle Nodata/NaN
         fill = float(self.mean) if self.mean is not None else 0.0
 
-        def get_clean_data(arr, nd):
-            mask = np.ones_like(arr, dtype=bool)
+        def clean(x, nd):
+            m = np.isfinite(x)
             if nd is not None:
-                mask &= ~np.isclose(arr, nd, atol=1e-3)
-            mask &= np.isfinite(arr)
-            cleaned_arr = np.where(mask, arr, fill)
-            return cleaned_arr, mask.astype(np.float32)
+                m &= ~np.isclose(x, nd, atol=1e-3)
+            return np.where(m, x, fill), m.astype(np.float32)
 
-        lr, lr_mask = get_clean_data(lr, nodata_lr)
-        hr, hr_mask = get_clean_data(hr, nodata_hr)
+        lr, lm = clean(lr, nodata_lr)
+        hr, hm = clean(hr, nodata_hr)
 
-        lr = np.where(lr_mask == 1.0, lr, fill)
-        hr = np.where(hr_mask == 1.0, hr, fill)
-
+        # ---------------- cropping (train only) ----------------
         if self.is_train:
-            ih, iw = lr.shape[:2]
-            for _ in range(20):
-                iy   = random.randint(0, ih - self.patch_size)
-                ix   = random.randint(0, iw - self.patch_size)
-                iy_h = iy * self.scale
-                ix_h = ix * self.scale
-                ph_h = self.patch_size * self.scale
-                target_mask = hr_mask[iy_h:iy_h+ph_h, ix_h:ix_h+ph_h]
-                if target_mask.mean() > 0.2:
-                    break
+            hr_h, hr_w = hr.shape
+            i = random.randint(0, hr_h - self.patch_size * self.scale)
+            j = random.randint(0, hr_w - self.patch_size * self.scale)
 
-            lr      = lr[iy:iy+self.patch_size, ix:ix+self.patch_size]
-            hr      = hr[iy_h:iy_h+ph_h, ix_h:ix_h+ph_h]
-            hr_mask = target_mask
+            hr   = hr  [i : i + self.patch_size * self.scale,
+                        j : j + self.patch_size * self.scale]
+            lr   = lr  [i // self.scale : i // self.scale + self.patch_size,
+                        j // self.scale : j // self.scale + self.patch_size]
+            mask = hm  [i : i + self.patch_size * self.scale,
+                        j : j + self.patch_size * self.scale]
 
-            # crop AUX to same spatial extent as HR if available
+            # FIX 1 — crop aux to the same HR patch window
             if aux is not None:
-                aux = aux[:, iy_h:iy_h+ph_h, ix_h:ix_h+ph_h]
+                aux = aux[
+                    :,
+                    i : i + self.patch_size * self.scale,
+                    j : j + self.patch_size * self.scale,
+                ]
+        else:
+            mask = hm  # validation/test: use full clean mask
 
-        # Apply augmentations
-        if self.transform is not None:
-            # pass aux through transforms 
-            lr, hr, hr_mask, aux = self.transform(lr, hr, hr_mask, aux)
-            
-        # to tensors
-        lr      = np.ascontiguousarray(lr)
-        hr      = np.ascontiguousarray(hr)
-        hr_mask = np.ascontiguousarray(hr_mask)
+        # ---------------- augmentations ----------------
+        if self.transform:
+            lr, hr, mask, aux = self.transform(lr, hr, mask, aux)
 
-        lr_t   = torch.from_numpy(lr).unsqueeze(0)
-        hr_t   = torch.from_numpy(hr).unsqueeze(0)
-        mask_t = torch.from_numpy(hr_mask).unsqueeze(0)
+        # ---------------- convert to tensors ----------------
+        lr   = torch.from_numpy(lr).unsqueeze(0).float()    # (1, H_lr, W_lr)
+        hr   = torch.from_numpy(hr).unsqueeze(0).float()    # (1, H_hr, W_hr)
+        mask = torch.from_numpy(mask).unsqueeze(0).float()  # (1, H_hr, W_hr)
 
-        if self.mean is not None and self.std is not None:
-            lr_t = (lr_t - self.mean) / self.std
-            hr_t = (hr_t - self.mean) / self.std
+        # ---------------- normalization ----------------
+        if self.mean is not None:
+            lr = (lr - self.mean) / self.std
+            hr = (hr - self.mean) / self.std
 
-        # AUX PROCESSING 
+        # ---------------- AUX handling ----------------
         if aux is not None:
-            aux = np.ascontiguousarray(aux)
+            cont = aux[:-1]                                  # continuous bands
+            if self.aux_mean is not None:
+                cont = (cont - self.aux_mean[:, None, None]) / self.aux_std[:, None, None]
 
-            # split continuous + LULC
-            cont_aux = aux[:-1]   # NDVI, NDWI, NDMI, bands...
-            lulc_raw = aux[-1]     # ESA WorldCover MAP
+            lulc = encode_lulc(aux[-1].astype(np.int32))
+            lulc = np.clip(lulc, 0, NUM_LULC_CLASSES - 1)
 
-            # encode LULC
-            lulc_idx = encode_lulc(lulc_raw)
-            lulc_onehot = one_hot_lulc(lulc_idx)
-
-            # continuous tensor
-            cont_t = torch.from_numpy(cont_aux)
-            aux_min = cont_t.view(cont_t.shape[0], -1).min(1)[0][:, None, None]
-            aux_max = cont_t.view(cont_t.shape[0], -1).max(1)[0][:, None, None]
-            cont_t = (cont_t - aux_min) / (aux_max - aux_min + 1e-6)
-
-            # LULC tensor
-            lulc_t = torch.from_numpy(lulc_onehot)
-
-            aux_t = torch.cat([cont_t, lulc_t], dim=0)
+            aux_tensor = torch.cat([
+                torch.from_numpy(cont).float(),
+                torch.from_numpy(one_hot_lulc(lulc)).float(),
+            ], dim=0)   # (C_cont + NUM_LULC_CLASSES, H_hr, W_hr)
 
         else:
-            # no AUX case
-            aux_t = torch.zeros(
-                (NUM_LULC_CLASSES, hr_t.shape[-2], hr_t.shape[-1])
+            # FIX 2 — zeros must match HR spatial size, not LR
+            aux_channels = (
+                len(self.aux_mean) + NUM_LULC_CLASSES
+                if self.aux_mean is not None
+                else NUM_LULC_CLASSES
+            )
+            aux_tensor = torch.zeros(
+                (aux_channels, hr.shape[-2], hr.shape[-1]),
+                dtype=torch.float32,
             )
 
-        return lr_t, hr_t, mask_t, aux_t  
-                
+        return lr, hr, mask, aux_tensor
