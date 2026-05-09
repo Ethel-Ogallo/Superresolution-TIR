@@ -1,12 +1,9 @@
 """
-augmentations.py — Spatial augmentations for TIR Super-Resolution (Phase 2)
+augmentations.py — Spatial augmentations for TIR Super-Resolution 
 
 Rules:
-- All transforms applied identically to LR, HR and hr_mask
-  to preserve spatial correspondence
-- Only label-preserving transforms (no colour jitter, no independent crops)
+- All transforms applied identically to LR, HR and hr_maskto preserve spatial correspondence
 - LR transforms use scale-correct versions of spatial ops
-- Augmentations applied to train only — dataset handles this
 """
 
 import random
@@ -115,7 +112,7 @@ def train_transforms():
 # if __name__ == "__main__":
 #     import torch
 #     from pathlib import Path
-#     from dataset_copy import SRDataset
+#     from dataset import SRDataset
 
 #     PATCHES_DIR = Path("/share/home/e2406751/Superresolution-TIR/data/processed/patches")
 #     STATS_PATH  = PATCHES_DIR / "stats.json"

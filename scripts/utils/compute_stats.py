@@ -51,6 +51,35 @@ def compute_stats(tile_dir):
         "n_valid_pixels": int(n)
     }
 
+def compute_data_range(tile_dir, low_p=1.0, high_p=99.0):
+    """Compute data range from percentile of valid pixels (train only)."""
+    files = sorted(tile_dir.glob("*.npy"))
+    if not files:
+        raise FileNotFoundError(f"No .npy files found in {tile_dir}")
+
+    values = []
+
+    for f in files:
+        tile = np.load(f).astype(np.float64)
+        valid = tile[np.isfinite(tile)]
+        if valid.size > 0:
+            values.append(valid)
+
+    if len(values) == 0:
+        raise ValueError(f"No valid pixels in {tile_dir}")
+
+    values = np.concatenate(values)
+
+    low  = np.percentile(values, low_p)
+    high = np.percentile(values, high_p)
+
+    return {
+        "low_percentile": float(low),
+        "high_percentile": float(high),
+        "data_range": float(high - low)
+    }
+
+
 print("Computing HR stats from train tiles...")
 hr_stats = compute_stats(TRAIN_HR)
 print(f"  mean={hr_stats['mean']:.4f}  std={hr_stats['std']:.4f}  "
@@ -63,13 +92,29 @@ print(f"  mean={lr_stats['mean']:.4f}  std={lr_stats['std']:.4f}  "
       f"min={lr_stats['min']:.4f}  max={lr_stats['max']:.4f}  "
       f"n={lr_stats['n_valid_pixels']:,}")
 
+print("Computing HR data range (train tiles)...")
+hr_range = compute_data_range(TRAIN_HR)
+
+print(f"  p1={hr_range['low_percentile']:.4f}  "
+      f"p99={hr_range['high_percentile']:.4f}  "
+      f"range={hr_range['data_range']:.4f}")
+
 # Save stats
+# stats = {
+#     "description": "Global normalisation stats computed from train tiles only",
+#     "hr": hr_stats,
+#     "lr": lr_stats
+# }
 stats = {
     "description": "Global normalisation stats computed from train tiles only",
     "hr": hr_stats,
-    "lr": lr_stats
+    "lr": lr_stats,
+    "hr_data_range": hr_range["data_range"],
+    "hr_percentiles": {
+        "p1": hr_range["low_percentile"],
+        "p99": hr_range["high_percentile"]
+    }
 }
-
 with open(STATS_PATH, "w") as f:
     json.dump(stats, f, indent=2)
 

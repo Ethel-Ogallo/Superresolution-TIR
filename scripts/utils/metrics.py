@@ -1,204 +1,182 @@
+# scripts/utils/metrics.py
 """
-metrics.py — Shared training step for all SR models.
+metrics.py — Shared metrics and step logic for all SR models.
 
-Computes:
-  - Masked L1 reconstruction loss
-  - Optional gradient loss
-  - PSNR / SSIM / MAE on the valid bounding box only
-
-PSNR and SSIM are computed only over valid pixels by masking invalid
-regions to the valid mean rather than zero — this prevents zero-vs-zero
-pairs from inflating scores when nodata borders are large.
-
-FiLM-safe and backbone-agnostic.
+- full metrics (all valid pixels)
+- water-only metrics
+- non-water metrics
 """
 
 import torch
-from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
-from scripts.utils.loss import gradient_loss
+from torchmetrics.image import (
+    PeakSignalNoiseRatio,
+    StructuralSimilarityIndexMeasure,
+)
+from scripts.utils.loss import masked_l1
 
 
-def build_metrics(data_range: float):
-    metrics = {}
-    for split in ("train", "val", "test"):
-        metrics[f"{split}_psnr"] = PeakSignalNoiseRatio(data_range=data_range)
-        metrics[f"{split}_ssim"] = StructuralSimilarityIndexMeasure(data_range=data_range)
-    return metrics
-
-
-def crop_to_valid_bbox(sr: torch.Tensor, hr: torch.Tensor, mask: torch.Tensor):
+# -----------------------------
+# MASK HELPERS
+# -----------------------------
+def build_masks(hr_mask, water_mask):
     """
-    Crop sr, hr, and mask to the tight bounding box of valid pixels.
-    Returns originals unchanged if the valid region is too small for SSIM.
+    Build consistent evaluation masks.
     """
-    valid = mask[:, 0]                                      # (B, H, W)
-    rows  = valid.any(dim=2).any(dim=0).nonzero(as_tuple=True)[0]
-    cols  = valid.any(dim=1).any(dim=0).nonzero(as_tuple=True)[0]
+    full = hr_mask
 
-    if rows.numel() < 11 or cols.numel() < 11:
-        return sr, hr, mask
+    if water_mask is None:
+        return full, None, None
 
-    r0, r1 = rows[0].item(), rows[-1].item() + 1
-    c0, c1 = cols[0].item(), cols[-1].item() + 1
+    water = hr_mask * water_mask
+    nonwater = hr_mask * (1.0 - water_mask)
 
-    return (
-        sr  [:, :, r0:r1, c0:c1],
-        hr  [:, :, r0:r1, c0:c1],
-        mask[:, :, r0:r1, c0:c1],
-    )
+    return full, water, nonwater
 
 
-def _fill_invalid(tensor: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+# -----------------------------
+# IMAGE CLEANING
+# -----------------------------
+def fill_invalid(sr, hr, mask):
     """
-    Replace invalid pixels (mask == 0) with the per-image valid mean.
-    Prevents zero-vs-zero pairs from inflating PSNR/SSIM on nodata borders.
-    Falls back to global tensor mean, then 0.0, to guard against NaN.
+    Replace invalid pixels (mask==0) with mean of valid HR pixels.
     """
-    out = tensor.clone()
-    for b in range(tensor.shape[0]):
-        valid_mask = mask[b] > 0.5
-        valid_vals = tensor[b][valid_mask]
+    sr_out = sr.float().clone()
+    hr_out = hr.float().clone()
 
-        if valid_vals.numel() > 0:
-            fill = valid_vals.mean()
-        else:
-            all_vals = tensor[b]
-            fill = all_vals.mean() if all_vals.numel() > 0 else torch.tensor(0.0, device=tensor.device)
+    for b in range(hr.shape[0]):
+        valid = hr_out[b][mask[b] > 0.5]
 
+        fill = valid.mean() if valid.numel() > 0 else torch.tensor(0.0, device=hr.device)
         if not torch.isfinite(fill):
-            fill = torch.tensor(0.0, device=tensor.device)
+            fill = torch.tensor(0.0, device=hr.device)
 
-        out[b] = torch.where(valid_mask, tensor[b], fill)
+        inv = mask[b] <= 0.5
+        sr_out[b][inv] = fill
+        hr_out[b][inv] = fill
 
-    return out
+    return sr_out, hr_out
 
 
-def _safe_ssim(module, sr: torch.Tensor, hr: torch.Tensor, stage: str, device) -> torch.Tensor:
+# -----------------------------
+# SINGLE METRIC BLOCK
+# -----------------------------
+def _compute_single_metric_set(sr, hr, mask, module, prefix, sync_dist):
     """
-    Compute SSIM with full NaN/Inf guards.
-
-    Root cause of Inf: torchmetrics SSIM divides by data_range^2 internally.
-    If denormalized values exceed data_range, numerator terms dominate and
-    blow up. Fix: clamp both tensors to [0, data_range] before the call.
+    Computes PSNR / SSIM / MAE / RMSE for a given mask.
     """
-    # Must be 4D
-    if sr.dim() == 3:
-        sr = sr.unsqueeze(0)
-        hr = hr.unsqueeze(0)
 
-    # Spatial size check
-    if min(sr.shape[-2], sr.shape[-1]) < 11:
-        return torch.tensor(0.0, device=device)
+    valid = mask > 0.5
 
-    # Check inputs are finite
-    if not (torch.isfinite(sr).all() and torch.isfinite(hr).all()):
-        print(f"[WARNING] SSIM skipped — non-finite inputs "
-              f"(sr bad: {(~torch.isfinite(sr)).sum().item()}, "
-              f"hr bad: {(~torch.isfinite(hr)).sum().item()})")
-        return torch.tensor(0.0, device=device)
+    if valid.sum() == 0:
+        for m in ["psnr", "ssim", "mae", "rmse"]:
+            module.log(f"{prefix}_{m}",
+                       torch.tensor(0.0, device=sr.device),
+                       on_step=False, on_epoch=True,
+                       sync_dist=sync_dist)
+        return
 
-    # Clamp to [0, data_range] — prevents Inf when true range exceeds data_range.
-    # data_range is computed from the 1st-99th percentile of the training set,
-    # so outlier batches can legitimately exceed it after denormalization.
-    data_range = module.DATA_RANGE
-    sr = sr.clamp(0.0, data_range)
-    hr = hr.clamp(0.0, data_range)
+    err = (sr - hr)[valid]
+    mae = err.abs().mean()
+    rmse = err.pow(2).mean().sqrt()
 
-    try:
-        val = getattr(module, f"{stage}_ssim")(sr, hr)
-        if not torch.isfinite(val):
-            print(f"[WARNING] SSIM non-finite ({val.item():.4f}) after clamping "
-                  f"| shape={sr.shape} | data_range={data_range:.2f} "
-                  f"| sr=[{sr.min():.2f}, {sr.max():.2f}] "
-                  f"| hr=[{hr.min():.2f}, {hr.max():.2f}]")
-            return torch.tensor(0.0, device=device)
-        return val
-    except RuntimeError as e:
-        print(f"[WARNING] SSIM RuntimeError on shape {sr.shape}: {e}")
-        return torch.tensor(0.0, device=device)
+    sr_f, hr_f = fill_invalid(sr, hr, mask)
 
+    psnr_fn = PeakSignalNoiseRatio(data_range=module.DATA_RANGE).to(sr.device)
+    psnr = psnr_fn(sr_f, hr_f)
 
-def shared_step(module, batch, stage: str):
-    """
-    Shared training/validation/test step for all SR models.
+    if not torch.isfinite(psnr):
+        psnr = torch.tensor(0.0, device=sr.device)
 
-    Args:
-        module: LightningModule — must implement forward() and denormalize()
-        batch:  (lr, hr, mask, aux)
-        stage:  'train' | 'val' | 'test'
+    if min(sr.shape[-2], sr.shape[-1]) >= 11:
+        ssim_fn = StructuralSimilarityIndexMeasure(
+            data_range=module.DATA_RANGE
+        ).to(sr.device)
 
-    Returns:
-        loss scalar
-    """
-    lr_img, hr_img, hr_mask, aux = batch
-    aux_input = aux if (module.use_aux and aux is not None) else None
-    sr_img = module(lr_img, aux_input)
+        ssim = ssim_fn(
+            sr_f.clamp(0, module.DATA_RANGE),
+            hr_f.clamp(0, module.DATA_RANGE),
+        )
 
-    sr = module.denormalize(sr_img)
-    hr = module.denormalize(hr_img)
-
-    assert sr.shape == hr.shape, (
-        f"Shape mismatch: SR {sr.shape} vs HR {hr.shape}"
-    )
-
-    # ---- Masked L1 loss ----
-    abs_err    = torch.abs(sr - hr) * hr_mask
-    recon_loss = abs_err.sum() / torch.clamp(hr_mask.sum(), min=1.0)
-
-    # ---- Gradient loss ----
-    if module.hparams.lambda_grad > 0:
-        grad_loss = gradient_loss(sr, hr, hr_mask)
-        loss = recon_loss + module.hparams.lambda_grad * grad_loss
+        if not torch.isfinite(ssim):
+            ssim = torch.tensor(0.0, device=sr.device)
     else:
-        grad_loss = torch.tensor(0.0, device=sr.device)
-        loss = recon_loss
+        ssim = torch.tensor(0.0, device=sr.device)
 
-    # ---- Metrics (no grad) ----
-    with torch.no_grad():
-        sr_clean = torch.nan_to_num(sr, nan=0.0, posinf=0.0, neginf=0.0)
-        hr_clean = torch.nan_to_num(hr, nan=0.0, posinf=0.0, neginf=0.0)
+    module.log(f"{prefix}_psnr", psnr, on_step=False, on_epoch=True,
+               prog_bar=(prefix == "full"), sync_dist=sync_dist)
 
-        # Crop all three together — single bbox, guaranteed alignment
-        sr_crop, hr_crop, mask_crop = crop_to_valid_bbox(sr_clean, hr_clean, hr_mask)
+    module.log(f"{prefix}_ssim", ssim, on_step=False, on_epoch=True,
+               sync_dist=sync_dist)
 
-        valid = mask_crop > 0.5
+    module.log(f"{prefix}_mae", mae, on_step=False, on_epoch=True,
+               prog_bar=(prefix == "full"), sync_dist=sync_dist)
 
-        if valid.sum() == 0 or sr_crop.numel() == 0:
-            psnr_val = torch.tensor(0.0, device=sr.device)
-            ssim_val = torch.tensor(0.0, device=sr.device)
-            mae_val  = torch.tensor(0.0, device=sr.device)
-        else:
-            # MAE — valid pixels only
-            mae_val = (sr_crop - hr_crop)[valid].abs().mean()
+    module.log(f"{prefix}_rmse", rmse, on_step=False, on_epoch=True,
+               sync_dist=sync_dist)
 
-            # Fill invalid pixels with per-image valid mean for PSNR/SSIM
-            sr_filled = _fill_invalid(sr_crop, mask_crop)
-            hr_filled = _fill_invalid(hr_crop, mask_crop)
 
-            # PSNR
-            psnr_val = getattr(module, f"{stage}_psnr")(sr_filled, hr_filled)
-            if not torch.isfinite(psnr_val):
-                print(f"[WARNING] PSNR non-finite ({psnr_val.item():.4f}), replacing with 0.0")
-                psnr_val = torch.tensor(0.0, device=sr.device)
+# -----------------------------
+# MAIN METRICS FUNCTION
+# -----------------------------
+def compute_metrics(module, sr, hr, hr_mask, stage, water_mask=None):
+    """
+    Computes:
+    - full valid pixels
+    - water pixels
+    - non-water pixels
+    """
 
-            # SSIM — fully guarded, clamped to data_range
-            ssim_val = _safe_ssim(module, sr_filled, hr_filled, stage, sr.device)
-
-    # ---- Logging ----
-    is_train  = stage == "train"
+    is_train = stage == "train"
     sync_dist = not is_train
 
-    module.log(f"{stage}_loss",       loss,       on_step=is_train, on_epoch=True,
-               prog_bar=True,  sync_dist=sync_dist)
-    module.log(f"{stage}_recon_loss", recon_loss, on_step=False,    on_epoch=True,
-               sync_dist=sync_dist)
-    module.log(f"{stage}_grad_loss",  grad_loss,  on_step=False,    on_epoch=True,
-               sync_dist=sync_dist)
-    module.log(f"{stage}_psnr",       psnr_val,   on_step=False,    on_epoch=True,
-               prog_bar=True,  sync_dist=sync_dist)
-    module.log(f"{stage}_ssim",       ssim_val,   on_step=False,    on_epoch=True,
-               prog_bar=True,  sync_dist=sync_dist)
-    module.log(f"{stage}_mae",        mae_val,    on_step=False,    on_epoch=True,
-               prog_bar=True,  sync_dist=sync_dist)
+    sr = torch.nan_to_num(sr, nan=0.0, posinf=0.0, neginf=0.0)
+    hr = torch.nan_to_num(hr, nan=0.0, posinf=0.0, neginf=0.0)
+
+    full_mask, water_mask_out, nonwater_mask = build_masks(hr_mask, water_mask)
+
+    # FULL
+    _compute_single_metric_set(sr, hr, full_mask,
+                               module, f"{stage}_full", sync_dist)
+
+    # WATER
+    if water_mask_out is not None:
+        _compute_single_metric_set(sr, hr, water_mask_out,
+                                   module, f"{stage}_water", sync_dist)
+
+        # NON-WATER
+        _compute_single_metric_set(sr, hr, nonwater_mask,
+                                   module, f"{stage}_nonwater", sync_dist)
+
+
+# -----------------------------
+# TRAIN/VAL/TEST STEP
+# -----------------------------
+def shared_step(module, batch, stage: str):
+    """
+    Shared step for all SR models.
+    """
+
+    lr = batch["lr"]
+    hr = batch["hr"]
+    hr_mask = batch["hr_mask"]
+    water_mask = batch.get("water_mask", None)
+
+    if water_mask is not None:
+        water_mask = water_mask.to(hr_mask.device)
+
+    sr_img = module(lr)
+
+    sr = module.denormalize(sr_img[:, 0:1])
+    hr = module.denormalize(hr[:, 0:1])
+
+    loss = masked_l1(sr, hr, hr_mask)
+
+    module.log(f"{stage}_loss", loss,
+               on_step=(stage == "train"),
+               on_epoch=True,
+               prog_bar=True)
+
+    with torch.no_grad():
+        compute_metrics(module, sr, hr, hr_mask, stage, water_mask)
 
     return loss
