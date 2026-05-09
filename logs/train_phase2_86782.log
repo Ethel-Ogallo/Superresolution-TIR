@@ -1,0 +1,35 @@
+
+════════════════════════════════════════════════════════════
+Model : EDSR — Phase 2 Fine-tuning
+════════════════════════════════════════════════════════════
+[INFO] Loading EDSR pretrained: /share/home/e2406751/Superresolution-TIR/data/pretrained/EDSR_baseline_x4.pth
+[INFO] Loaded 68/74 layers
+┏━━━┳━━━━━━┳━━━━━━┳━━━━━━━━┳━━━━━━━┳━━━━━━━┓
+┃   ┃ Name ┃ Type ┃ Params ┃ Mode  ┃ FLOPs ┃
+┡━━━╇━━━━━━╇━━━━━━╇━━━━━━━━╇━━━━━━━╇━━━━━━━┩
+│ 0 │ body │ EDSR │  1.5 M │ train │     0 │
+└───┴──────┴──────┴────────┴───────┴───────┘
+Trainable params: 1.5 M                                                         
+Non-trainable params: 0                                                         
+Total params: 1.5 M                                                             
+Total estimated model params size (MB): 6                                       
+Modules in train mode: 74                                                       
+Modules in eval mode: 0                                                         
+Total FLOPs: 0                                                                  
+Epoch 89/99 ━━━━━━━━━━━━━━━━ 92/92 0:00:03 • 0:00:00 27.94it/s v_num: ktm0      
+                                                               train_loss_step: 
+                                                               2.252 val_loss:  
+                                                               3.170 val_psnr:  
+                                                               20.944 val_ssim: 
+                                                               0.960 val_mae:   
+                                                               3.170 val_rmse:  
+                                                               4.501            
+                                                               train_loss_epoch:
+                                                               2.509 train_psnr:
+                                                               22.461           
+                                                               train_ssim: 0.956
+                                                               train_mae: 2.509 
+                                                               train_rmse: 3.649
+
+[INFO] Best checkpoint: /share/castor/home/e2406751/Superresolution-TIR/checkpoints/phase2/edsr/edsr_phase2_epoch=69_val_psnr=20.9760.ckpt
+[INFO] Best val_psnr:   20.9760

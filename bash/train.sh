@@ -1,8 +1,10 @@
 #!/bin/bash -l
-#SBATCH --job-name=sisr_edsr            # Job name
-#SBATCH --gres=gpu:1                        # 1 GPU
-#SBATCH --cpus-per-gpu=6                   # 4 CPU cores
-#SBATCH --mem=24G                             # Memory per node
+#SBATCH --job-name=sisr_train_phase2
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-gpu=6
+#SBATCH --mem=32G
+# #SBATCH --output=logs/train_phase2_%j.log
+# #SBATCH --error=logs/train_phase2_%j.err
 
 # -------- Environment --------
 export WANDB_API_KEY="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"   # W&B API key for non-interactive login
@@ -13,27 +15,18 @@ conda activate sisr
 
 # -------- Project root (all relative paths resolve from here) --------
 cd /share/castor/home/e2406751/Superresolution-TIR
-# mkdir -p results/logs/edsr
+mkdir -p logs checkpoints/phase2
 
-# -------- Run training --------
-# EDSR
 python -m scripts.training.train \
-    --model edsr \
-    --metadata_json data/full_metadata.json \
-    --pretrained /share/home/e2406751/Superresolution-TIR/data/pretrained/EDSR_baseline_x4.pth \
+    --model resshift \
     --lr 1e-4 \
-    --lambda_grad 0.1 \
-    --bb_lr_scale 0.1 \
+    --batch_size 1 \
     --max_epochs 100 \
-    --patience 30 \
-    --batch_size 2  \
-    --num_workers 2 \
-    --use_aux \
-    --fusion_mode concat \
-    --run_name exp7_fr_aux \
-    --group EDSR \
+    --patience 10 \
+    --num_workers 4 \
     --project TIR_sisr \
-    --freeze_backbone 
+    --run_name resshift_ph2 \
+    --group benchmark_phase2
 
 # SWINIR
 # python -m scripts.training.train \

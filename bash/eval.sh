@@ -1,40 +1,46 @@
 #!/bin/bash -l
-#SBATCH --job-name=sisr_edsr_eval_test
+# eval.sh — Phase 1 zero-shot inference for all models
+
+#SBATCH --job-name=sisr_eval_phase1
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-gpu=6
-#SBATCH --mem=24G
+#SBATCH --mem=32G
+# #SBATCH --output=logs/eval_phase1_%j.log
+# #SBATCH --error=logs/eval_phase1_%j.err
 
-# Environment 
-export WANDB_API_KEY="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"
+# -------- Environment --------
+export WANDB_API_KEY="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"   # W&B API key for non-interactive login
 export WANDB_DIR=/tmp
 
 source /share/common/anaconda/etc/profile.d/conda.sh
 conda activate sisr
 
-# Project root 
 cd /share/castor/home/e2406751/Superresolution-TIR
-# mkdir -p results/logs/slurm
+# mkdir -p logs results/phase1
 
-# Run evaluation 
-python -m scripts.evaluation.evaluate \
-    --model       edsr \
-    --checkpoint   "wandb:ogalloethel-university-of-south-brittany/TIR_sisr/model-nt00luho:best" \
-    --metadata_json data/full_metadata.json \
-    --split        test \
-    --random_split \
-    --output_dir   results/SR_images/ \
-    --num_workers  2 \
-    --project      TIR_sisr \
-    --run_name     eval_v2 \
-    --group        rand_patch_split
+# Run all models
+# python -m scripts.evaluation.eval \
+#     --all \
+#     --phase 1
 
-# python -m scripts.evaluation.evaluate \
-#     --model         edsr \
-#     --checkpoint    "wandb:ogalloethel-university-of-south-brittany/TIR_sisr/model-nt00luho:best" \
-#     --metadata_json data/full_metadata.json \
-#     --loo_fold      PDR \
-#     --output_dir    results/SR_images/ \
-#     --num_workers   2 \
-#     --project       TIR_sisr \
-#     --run_name      eval_PDR_v2 \
-#     --group         LOO_benchmark
+# phase 1
+python -m scripts.evaluation.eval \
+    --model resshift \
+    --phase 1 \
+    --use_water_metrics \
+    --run_name "03_resshift_p1" \
+    --group benchmark_phase1
+
+# phase 2
+# python -m scripts.evaluation.eval \
+#     --model realesrgan \
+#     --phase 2 \
+#     --use_water_metrics \
+#     --run_name "02_realesrgan_eval" \
+#     --group benchmark_phase2 \
+#     --checkpoint checkpoints/phase2/realesrgan/realesrgan_phase2_epoch=33_val_psnr=19.9362.ckpt
+
+# checkpoints/phase2/edsr/edsr_phase2_epoch=69_val_psnr=20.9760.ckpt
+# checkpoints/phase2/hat/hat_phase2_epoch=16_val_psnr=21.2140.ckpt
+# checkpoints/phase2/realesrgan/realesrgan_phase2_epoch=33_val_psnr=19.9362.ckpt
+# checkpoints/phase2/swinir/swinir_phase2_epoch=21_val_psnr=21.6563.ckpt
