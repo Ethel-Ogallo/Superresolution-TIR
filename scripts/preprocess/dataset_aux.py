@@ -1,201 +1,257 @@
-"""AUX Extraction: Reproject Sentinel-2 once per site, then window-read per patch.
-PGDM-style update: categorical LULC uses nearest neighbor, continuous bands use bilinear.
+"""
+Patch auxiliary rasters using EXACT LR tile grid.
+
+FINAL AUX CHANNELS
+------------------
+0 BLUE
+1 GREEN
+2 RED
+3 NIR
+4 SWIR1
+5 NDVI
+6 NDWI
+7 NDMI
+8 LULC
+9 DEM
+
+INPUT AUX TIFF CHANNELS
+-----------------------
+0 B02 BLUE
+1 B03 GREEN
+2 B04 RED
+3 B05 RED_EDGE      <- REMOVED
+4 B08 NIR
+5 B11 SWIR1
+6 NDVI
+7 NDWI
+8 NDMI
+9 LULC
+10 DEM
+
+This script:
+- aligns AUX patches to LR tile grid
+- removes RED_EDGE band
+- normalizes spectral reflectance
+- clamps spectral indices
+- scales DEM
+- preserves categorical LULC
+- pads edge tiles safely
+- saves training-ready AUX tensors
 """
 
-import os
 import json
-import glob
-import argparse
-import tempfile
-import rasterio
 import numpy as np
+import rasterio
+from pathlib import Path
+from rasterio.windows import Window
 
-from rasterio.warp import reproject, Resampling
-from rasterio.transform import from_origin
-import rasterio.windows
+# PATHS
+PATCHES_DIR = Path("/share/home/e2406751/Superresolution-TIR/data/processed/patches")
+AUX_DIR = Path("/share/home/e2406751/Superresolution-TIR/data/AUX/auxiliary")
+METADATA_PATH = PATCHES_DIR / "metadata.json"
 
-SITE_TO_AUX = {
-    "PDR":  "TIR_data/sentinel2_aux/PDR_aux.tif",
-    "DZM":  "TIR_data/sentinel2_aux/DZM_aux.tif",
-    "BRC":  "TIR_data/sentinel2_aux/BRC_aux.tif",
-    "BAS":  "TIR_data/sentinel2_aux/BAS_aux.tif",
-    "HAUT": "TIR_data/sentinel2_aux/HAUT_aux.tif",
+TILE_SIZE = 64
+
+# FINAL AUX CHANNEL DEFINITIONS
+AUX_CHANNELS = [
+    "BLUE",
+    "GREEN",
+    "RED",
+    "NIR",
+    "SWIR1",
+    "NDVI",
+    "NDWI",
+    "NDMI",
+    "LULC",
+    "DEM"
+]
+
+print("\nFINAL AUX CHANNELS")
+for i, name in enumerate(AUX_CHANNELS):
+    print(f"{i}: {name}")
+
+# INPUT TIFF CHANNEL SELECTION
+# REMOVE RED_EDGE BAND (old channel 3)
+KEEP_CHANNELS = [0, 1, 2, 4, 5, 6, 7, 8, 9, 10]
+
+# OUTPUT FOLDERS
+for split in ["train", "val", "test"]:
+    (PATCHES_DIR / split / "AUX").mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+# LOAD TILE METADATA
+with open(METADATA_PATH) as f:
+    metadata = json.load(f)
+
+print(f"\nProcessing {len(metadata)} AUX patches...\n")
+
+# NORMALIZATION FUNCTIONS
+def normalize_reflectance(x):
+    """
+    Normalize Sentinel/Landsat reflectance.
+    Approx:
+        0–10000 -> 0–1
+    """
+    x = x / 10000.0
+    # prevent rare outliers
+    x = np.clip(x, 0.0, 1.5)
+    return x
+
+def normalize_index(x):
+    """NDVI / NDWI / NDMI"""
+    return np.clip(x, -1.0, 1.0)
+
+
+def normalize_dem(x):
+    """DEM scaling."""
+    return x / 2000.0
+
+
+def normalize_stack(arr):
+    """
+    Input:
+        (10, H, W)
+
+    Output:
+        normalized float32 tensor
+    """
+
+    out = np.zeros_like(arr, dtype=np.float32)
+
+    # RAW SPECTRAL BANDS BLUE GREEN RED NIR SWIR1
+    out[0:5] = normalize_reflectance(arr[0:5])
+
+    # INDICES
+    out[5] = normalize_index(arr[5])  # NDVI
+    out[6] = normalize_index(arr[6])  # NDWI
+    out[7] = normalize_index(arr[7])  # NDMI
+
+    # LULC (categorical)
+    out[8] = arr[8]
+
+    # DEM
+    out[9] = normalize_dem(arr[9])
+
+    return out.astype(np.float32)
+
+# CACHE OPEN RASTERS
+open_aux = {}
+
+saved = {
+    "train": 0,
+    "val": 0,
+    "test": 0
 }
 
-HR_RES_M = 7.5
-HR_PATCH_SIZE = 256
-AUX_PATCH_SIZE = HR_PATCH_SIZE
+missing = set()
 
+# MAIN PATCHING LOOP
+for tile_name, info in metadata.items():
 
-# -----------------------------
-# Reprojection (site-level)
-# -----------------------------
-def reproject_sentinel(aux_path, ref_metadata, out_path):
-    """Reproject full Sentinel scene to HR grid once per site."""
+    campaign = info["campaign"]
+    split = info["split"]
 
-    first = ref_metadata[0]
-    dst_crs = first["crs"]
+    row = info["row_origin"]
+    col = info["col_origin"]
 
-    lefts  = [e["hr_transform"][2] for e in ref_metadata]
-    tops   = [e["hr_transform"][5] for e in ref_metadata]
-    rights = [e["hr_transform"][2] + HR_PATCH_SIZE * e["hr_transform"][0] for e in ref_metadata]
-    bots   = [e["hr_transform"][5] + HR_PATCH_SIZE * e["hr_transform"][4] for e in ref_metadata]
+    aux_path = AUX_DIR / f"{campaign}_aux.tif"
 
-    left, top, right, bottom = min(lefts), max(tops), max(rights), min(bots)
+    out_path = (
+        PATCHES_DIR
+        / split
+        / "AUX"
+        / f"{tile_name}.npy"
+    )
 
-    transform = from_origin(left, top, HR_RES_M, HR_RES_M)
-    width  = int(round((right - left) / HR_RES_M))
-    height = int(round((top - bottom) / HR_RES_M))
+    # HANDLE MISSING AUX
+    if not aux_path.exists():
 
-    with rasterio.open(aux_path) as src:
-        meta = src.meta.copy()
-        meta.update({
-            "crs": dst_crs,
-            "transform": transform,
-            "width": width,
-            "height": height,
-            "dtype": "float32",
-            "compress": "lzw"
-        })
+        if campaign not in missing:
+            print(f"[WARNING] Missing AUX: {campaign}")
+            missing.add(campaign)
 
-        with rasterio.open(out_path, "w", **meta) as dst:
+        zero_patch = np.zeros(
+            (10, TILE_SIZE, TILE_SIZE),
+            dtype=np.float32
+        )
 
-            for i in range(1, src.count + 1):
+        np.save(out_path, zero_patch)
 
-                band_name = src.descriptions[i - 1] if src.descriptions else ""
+        saved[split] += 1
+        continue
 
-                # -----------------------------
-                # PGDM RULE:
-                # categorical → nearest
-                # continuous  → bilinear
-                # -----------------------------
-                if band_name and "LULC" in band_name.upper():
-                    resampling = Resampling.nearest
-                else:
-                    resampling = Resampling.bilinear
+    # OPEN RASTER (CACHE)
+    if campaign not in open_aux:
+        open_aux[campaign] = rasterio.open(aux_path)
 
-                reproject(
-                    source=rasterio.band(src, i),
-                    destination=rasterio.band(dst, i),
-                    src_transform=src.transform,
-                    src_crs=src.crs,
-                    dst_transform=transform,
-                    dst_crs=dst_crs,
-                    resampling=resampling
-                )
+    src = open_aux[campaign]
 
-    print(f"  Reprojected AUX → {width}x{height} @ {HR_RES_M}m")
+    # SAFETY CHECK
+    if src.count != 11:
+        raise ValueError(
+            f"{campaign} expected 11 bands "
+            f"but found {src.count}"
+        )
 
+    # READ SAME WINDOW AS LR TILE
+    window = Window(
+        col_off=col,
+        row_off=row,
+        width=TILE_SIZE,
+        height=TILE_SIZE
+    )
 
-# -----------------------------
-# Patch extraction
-# -----------------------------
-def extract_aux_patches(metadata_path, patch_dir):
+    patch = src.read(window=window).astype(np.float32)
 
-    with open(metadata_path, "r") as f:
-        metadata = json.load(f)
+    # REMOVE RED_EDGE CHANNEL
+    patch = patch[KEEP_CHANNELS]
 
-    if not metadata:
-        return
+    # EDGE TILE PADDING
+    if patch.shape[1:] != (TILE_SIZE, TILE_SIZE):
 
-    sample_id = metadata[0]["hr_image_id"]
-    site = sample_id.split("_")[0]
-    aux_path = SITE_TO_AUX.get(site)
+        padded = np.zeros(
+            (10, TILE_SIZE, TILE_SIZE),
+            dtype=np.float32
+        )
 
-    if not aux_path or not os.path.exists(aux_path):
-        print(f"Skipping {sample_id}: missing AUX at {aux_path}")
-        return
+        h, w = patch.shape[1:]
 
-    aux_out_dir = os.path.join(patch_dir, "AUX")
-    os.makedirs(aux_out_dir, exist_ok=True)
+        padded[:, :h, :w] = patch
 
-    print(f"\nProcessing AUX for {sample_id}...")
+        patch = padded
 
-    with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as tmp:
-        tmp_path = tmp.name
+    # FINAL CHANNEL CHECK
+    if patch.shape[0] != 10:
+        raise ValueError(
+            f"{campaign} produced "
+            f"{patch.shape[0]} channels instead of 10"
+        )
 
-    try:
-        reproject_sentinel(aux_path, metadata, tmp_path)
+    # NORMALIZATION
+    patch = normalize_stack(patch)
 
-        with rasterio.open(tmp_path) as src:
+    # NAN / INF SAFETY
+    patch = np.nan_to_num(
+        patch,
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0
+    )
 
-            for entry in metadata:
+    # SAVE
+    np.save(out_path, patch)
 
-                patch_name = entry["patch_name"]
-                t = entry["hr_transform"]
+    saved[split] += 1
 
-                left   = t[2]
-                top    = t[5]
-                right  = left + HR_PATCH_SIZE * t[0]
-                bottom = top  + HR_PATCH_SIZE * t[4]
+# CLEANUP
+for src in open_aux.values():
+    src.close()
 
-                window = rasterio.windows.from_bounds(
-                    left, bottom, right, top,
-                    transform=src.transform
-                )
+# SUMMARY
+print("\nDONE\n")
 
-                out_arr = np.zeros(
-                    (src.count, AUX_PATCH_SIZE, AUX_PATCH_SIZE),
-                    dtype=np.float32
-                )
-
-                for i in range(1, src.count + 1):
-
-                    band_name = src.descriptions[i - 1] if src.descriptions else ""
-
-                    # PGDM rule again
-                    if band_name and "LULC" in band_name.upper():
-                        resampling = Resampling.nearest
-                    else:
-                        resampling = Resampling.bilinear
-
-                    out_arr[i - 1] = src.read(
-                        i,
-                        window=window,
-                        out_shape=(AUX_PATCH_SIZE, AUX_PATCH_SIZE),
-                        resampling=resampling
-                    )
-
-                out_path = os.path.join(aux_out_dir, patch_name)
-
-                meta = {
-                    "driver": "GTiff",
-                    "height": AUX_PATCH_SIZE,
-                    "width": AUX_PATCH_SIZE,
-                    "count": src.count,
-                    "dtype": "float32",
-                    "crs": entry["crs"],
-                    "transform": from_origin(left, top, t[0], abs(t[4])),
-                    "compress": "lzw"
-                }
-
-                with rasterio.open(out_path, "w", **meta) as dst:
-                    dst.write(out_arr)
-
-        print(f"  Saved {len(metadata)} AUX patches")
-
-    finally:
-        os.remove(tmp_path)
-
-
-# -----------------------------
-# CLI
-# -----------------------------
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--metadata-dir", required=True)
-    parser.add_argument("--patch-dir", required=True)
-    args = parser.parse_args()
-
-    meta_files = glob.glob(os.path.join(args.metadata_dir, "metadata_*.json"))
-
-    for meta_file in sorted(meta_files):
-        extract_aux_patches(meta_file, args.patch_dir)
-
-
-if __name__ == "__main__":
-    main()
-
-# python scripts/preprocess/extract_aux.py \
-#     --metadata-dir TIR_data/processed/metadata \
-#     --patch-dir TIR_data/processed/tir_patches
+print(f"Train AUX patches: {saved['train']}")
+print(f"Val AUX patches:   {saved['val']}")
+print(f"Test AUX patches:  {saved['test']}")
