@@ -15,18 +15,23 @@ conda activate sisr
 
 # -------- Project root (all relative paths resolve from here) --------
 cd /share/castor/home/e2406751/Superresolution-TIR
-mkdir -p logs checkpoints/phase2
+mkdir -p logs checkpoints/model_dev
 
 python -m scripts.training.train \
-    --model resshift \
-    --lr 1e-4 \
-    --batch_size 1 \
+    --model swinir \
+    --lr 5e-5 \
+    --batch_size 2 \
     --max_epochs 100 \
-    --patience 10 \
+    --patience 15 \
     --num_workers 4 \
+    --use_aux 1 \
+    --adaptation_strategy projection \
     --project TIR_sisr \
-    --run_name resshift_ph2 \
-    --group benchmark_phase2
+    --run_name 01_proj_aux \
+    --group model_dev
+
+
+# --adaptation_strategy projection or direct
 
 # SWINIR
 # python -m scripts.training.train \

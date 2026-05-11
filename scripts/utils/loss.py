@@ -2,9 +2,6 @@
 """
 loss.py — Loss functions for TIR Super-Resolution.
 
-Phase 1: no loss (inference only)
-Phase 2: masked_l1
-Model dev: masked_l1 + gradient_loss + masked_water 
 """
 
 import torch

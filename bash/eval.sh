@@ -24,21 +24,21 @@ cd /share/castor/home/e2406751/Superresolution-TIR
 #     --phase 1
 
 # phase 1
-python -m scripts.evaluation.eval \
-    --model resshift \
-    --phase 1 \
-    --use_water_metrics \
-    --run_name "03_resshift_p1" \
-    --group benchmark_phase1
+# python -m scripts.evaluation.eval \
+#     --model resshift \
+#     --phase 1 \
+#     --use_water_metrics \
+#     --run_name "03_resshift_p1" \
+#     --group benchmark_phase1
 
 # phase 2
-# python -m scripts.evaluation.eval \
-#     --model realesrgan \
-#     --phase 2 \
-#     --use_water_metrics \
-#     --run_name "02_realesrgan_eval" \
-#     --group benchmark_phase2 \
-#     --checkpoint checkpoints/phase2/realesrgan/realesrgan_phase2_epoch=33_val_psnr=19.9362.ckpt
+python -m scripts.evaluation.eval \
+    --model swinir \
+    --phase 2 \
+    --use_water_metrics \
+    --run_name "01_nn_eval" \
+    --group model_dev \
+    --checkpoint checkpoints/phase2/swinir/swinir_phase2_epoch=21_val_psnr=21.6563.ckpt
 
 # checkpoints/phase2/edsr/edsr_phase2_epoch=69_val_psnr=20.9760.ckpt
 # checkpoints/phase2/hat/hat_phase2_epoch=16_val_psnr=21.2140.ckpt
