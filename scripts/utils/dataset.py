@@ -52,28 +52,29 @@ class SRDataset(Dataset):
         return len(self.files)
 
     def __getitem__(self, idx):
-
         fname = self.files[idx]
 
         hr = np.load(self.hr_dir / fname).astype(np.float32)
         lr = np.load(self.lr_dir / fname).astype(np.float32)
 
-        # mask invalid pixels (nan) and store as separate mask
         hr_mask = np.isfinite(hr).astype(np.float32)
         lr_mask = np.isfinite(lr).astype(np.float32)
 
         hr = np.where(hr_mask, hr, self.hr_mean)
         lr = np.where(lr_mask, lr, self.lr_mean)
 
-        # nomalise
         hr = (hr - self.hr_mean) / self.hr_std
         lr = (lr - self.lr_mean) / self.lr_std
 
-        # Transform (data augmentation)
-        if self.transform:
-            lr, hr, hr_mask = self.transform(lr, hr, hr_mask)
+        aux = None
+        if self.use_aux and self.aux_dir is not None:
+            aux = np.load(self.aux_dir / fname).astype(np.float32)
 
-        # CHANNEL HANDLING (baseline only)
+        # PASS AUX INTO TRANSFORM
+        if self.transform:
+            lr, hr, hr_mask, aux = self.transform(lr, hr, hr_mask, aux)
+
+        # channel handling
         if self.repeat_channels:
             hr = np.stack([hr] * 3, axis=0)
             lr = np.stack([lr] * 3, axis=0)
@@ -81,31 +82,22 @@ class SRDataset(Dataset):
             hr = hr[None]
             lr = lr[None]
 
-        # Aux input
-        aux = None
-        if self.use_aux and self.aux_dir is not None:
-            aux = np.load(self.aux_dir / fname).astype(np.float32)
+        hr       = torch.from_numpy(hr).float()
+        lr       = torch.from_numpy(lr).float()
+        hr_mask  = torch.from_numpy(hr_mask)[None].float()
+        lr_mask  = torch.from_numpy(lr_mask)[None].float()
 
-        # To tensors
-        hr = torch.from_numpy(hr).float()
-        lr = torch.from_numpy(lr).float()
-
-        hr_mask = torch.from_numpy(hr_mask)[None].float()
-        lr_mask = torch.from_numpy(lr_mask)[None].float()
-
-        # water mask
         water_mask = None
         if self.use_water_mask:
             wm = np.load(self.wm_dir / fname).astype(np.float32)
             water_mask = torch.from_numpy(wm)[None].float()
 
-        # output dict
         sample = {
-            "lr": lr,
-            "hr": hr,
+            "lr":      lr,
+            "hr":      hr,
             "hr_mask": hr_mask,
             "lr_mask": lr_mask,
-            "fname": fname,
+            "fname":   fname,
         }
 
         if water_mask is not None:

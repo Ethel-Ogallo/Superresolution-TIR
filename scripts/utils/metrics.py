@@ -5,11 +5,11 @@ from torchmetrics.image import (
     PeakSignalNoiseRatio,
     StructuralSimilarityIndexMeasure,
 )
-from scripts.utils.loss import masked_l1
+from scripts.utils.loss import masked_l1, combined_loss, gradient_loss, water_aware_loss
 
 
-# ------ Helpers-------------
-# mask building
+# ------ Helpers -------------
+
 def build_masks(hr_mask, water_mask):
     full = hr_mask
 
@@ -22,7 +22,6 @@ def build_masks(hr_mask, water_mask):
     return full, water, nonwater
 
 
-# image cleaning
 def fill_invalid(sr, hr, mask):
     sr_out = sr.float().clone()
     hr_out = hr.float().clone()
@@ -41,7 +40,6 @@ def fill_invalid(sr, hr, mask):
     return sr_out, hr_out
 
 
-# Single metric set computation (full, water, nonwater)
 def _compute_single_metric_set(sr, hr, mask, module, prefix, sync_dist):
 
     valid = mask > 0.5
@@ -62,7 +60,7 @@ def _compute_single_metric_set(sr, hr, mask, module, prefix, sync_dist):
     mae = err.abs().mean()
     rmse = err.pow(2).mean().sqrt()
 
-    # ----- PSNR ------
+    # PSNR
     sr_f, hr_f = fill_invalid(sr, hr, mask)
 
     psnr_fn = PeakSignalNoiseRatio(data_range=module.DATA_RANGE).to(sr.device)
@@ -74,18 +72,16 @@ def _compute_single_metric_set(sr, hr, mask, module, prefix, sync_dist):
     if not torch.isfinite(psnr):
         psnr = torch.tensor(0.0, device=sr.device)
 
-    # ------ SSIM ------
+    # SSIM
     if min(sr.shape[-2], sr.shape[-1]) >= 11:
 
         ssim_fn = StructuralSimilarityIndexMeasure(
             data_range=module.DATA_RANGE
         ).to(sr.device)
 
-        # IMPORTANT: use raw masked region, not filled image
         sr_ssim = sr.clone()
         hr_ssim = hr.clone()
 
-        # mask invalid regions to 0 (not mean-fill)
         sr_ssim[mask <= 0.5] = 0.0
         hr_ssim[mask <= 0.5] = 0.0
 
@@ -100,7 +96,6 @@ def _compute_single_metric_set(sr, hr, mask, module, prefix, sync_dist):
     else:
         ssim = torch.tensor(0.0, device=sr.device)
 
-    # Logging
     module.log(f"{prefix}_psnr", psnr,
                on_step=False, on_epoch=True,
                prog_bar=(prefix == "full"),
@@ -121,6 +116,7 @@ def _compute_single_metric_set(sr, hr, mask, module, prefix, sync_dist):
 
 
 # ---------- Main metric functions ---------
+
 def compute_metrics(module, sr, hr, hr_mask, stage, water_mask=None):
 
     sync_dist = (stage != "train")
@@ -141,7 +137,8 @@ def compute_metrics(module, sr, hr, hr_mask, stage, water_mask=None):
                                    module, f"{stage}_nonwater", sync_dist)
 
 
-# ---------- Train step ----------
+# ---------- Shared step ----------
+
 def shared_step(module, batch, stage: str):
 
     lr = batch["lr"]
@@ -154,11 +151,26 @@ def shared_step(module, batch, stage: str):
 
     sr_img = module(batch)
 
-    # SINGLE CHANNEL CONSISTENCY (ONLY FOR METRICS, NOT FOR LOSS BACKPROP)
     sr = module.denormalize(sr_img[:, 0:1])
     hr = module.denormalize(hr[:, 0:1])
 
-    loss = masked_l1(sr, hr, hr_mask)
+    # log each component separately for lambda tuning
+    l1   = masked_l1(sr, hr, hr_mask)
+    grad = gradient_loss(sr, hr, hr_mask)
+    water = water_aware_loss(sr, hr, hr_mask, water_mask) if water_mask is not None \
+            else torch.tensor(0.0, device=sr.device)
+
+    module.log(f"{stage}_l1_loss",    l1,    on_step=False, on_epoch=True)
+    module.log(f"{stage}_grad_loss",  grad,  on_step=False, on_epoch=True)
+    module.log(f"{stage}_water_loss", water, on_step=False, on_epoch=True)
+
+    # combined loss using cli lambdas
+    loss = combined_loss(
+        sr, hr, hr_mask,
+        water_mask=water_mask,
+        lambda_grad=module.lambda_grad,
+        lambda_water=module.lambda_water,
+    )
 
     module.log(f"{stage}_loss", loss,
                on_step=(stage == "train"),

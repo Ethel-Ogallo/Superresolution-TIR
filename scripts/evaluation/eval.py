@@ -1,11 +1,4 @@
 # scripts/evaluation/eval.py
-"""
-eval.py — Phase 1 and Phase 2 evaluation for all SR models.
-
-Phase 1 (inference): python -m scripts.evaluation.eval --model edsr --phase 1
-Phase 2 (inference after fine-tuning): python -m scripts.evaluation.eval --model edsr --phase 2 --checkpoint path/to/ckpt.ckpt
-Run all: python -m scripts.evaluation.eval --all --phase 1
-"""
 
 import argparse
 import json
@@ -28,71 +21,86 @@ HR_STD     = stats["hr"]["std"]
 DATA_RANGE = stats["hr_data_range"]
 
 
+# -----------------------------
+# MODEL BUILDER
+# -----------------------------
 def build_model(model_name, phase, checkpoint=None):
-    # Shared normalization stats 
+
     common_norm = dict(
         hr_mean=HR_MEAN,
         hr_std=HR_STD,
-    )
-
-    # Classical SR models need data_range
-    sr_common = dict(
-        **common_norm,
         data_range=DATA_RANGE,
-        phase = phase,
+        phase=phase,
     )
 
-    if model_name == "edsr":
-        from scripts.models.edsr import EDSRModule
-
-        if checkpoint:
-            return EDSRModule.load_from_checkpoint(checkpoint, **sr_common)
-
-        return EDSRModule(
-            pretrained_path=str(PRETRAINED / "EDSR_baseline_x4.pth"),
-            **sr_common
-        )
-
-    elif model_name == "swinir":
+    # ---------------- SWINIR ----------------
+    if model_name == "swinir":
         from scripts.models.swinir import SwinIRModule
 
-        if checkpoint:
-            return SwinIRModule.load_from_checkpoint(checkpoint, **sr_common)
-
-        return SwinIRModule(
+        model = SwinIRModule(
             pretrained_path=str(PRETRAINED / "SwinIR_classical_x4.pth"),
-            **sr_common
+            **common_norm
         )
 
+        if checkpoint:
+            print(f"[INFO] Loading checkpoint: {checkpoint}")
+            ckpt = torch.load(checkpoint, map_location="cpu")
+
+            # SAFE LOAD: avoid proj mismatch crashes
+            state = ckpt.get("state_dict", ckpt.get("params", ckpt))
+
+            missing, unexpected = model.load_state_dict(state, strict=False)
+
+            print(f"[INFO] Missing keys: {len(missing)}")
+            print(f"[INFO] Unexpected keys: {len(unexpected)}")
+
+        return model
+
+
+    # ---------------- EDSR ----------------
+    elif model_name == "edsr":
+        from scripts.models.edsr import EDSRModule
+
+        return EDSRModule.load_from_checkpoint(
+            checkpoint,
+            **common_norm
+        ) if checkpoint else EDSRModule(
+            pretrained_path=str(PRETRAINED / "EDSR_baseline_x4.pth"),
+            **common_norm
+        )
+
+
+    # ---------------- HAT ----------------
     elif model_name == "hat":
         from scripts.models.hat import HATModule
 
-        if checkpoint:
-            return HATModule.load_from_checkpoint(checkpoint, **sr_common)
-
-        return HATModule(
+        return HATModule.load_from_checkpoint(
+            checkpoint,
+            **common_norm
+        ) if checkpoint else HATModule(
             pretrained_path=str(PRETRAINED / "HAT_imagenet_x4.pth"),
-            **sr_common
+            **common_norm
         )
 
+
+    # ---------------- RealESRGAN ----------------
     elif model_name == "realesrgan":
         from scripts.models.realesrgan import RealESRGANModule
 
-        if checkpoint:
-            return RealESRGANModule.load_from_checkpoint(checkpoint, **sr_common)
-
-        return RealESRGANModule(
+        return RealESRGANModule.load_from_checkpoint(
+            checkpoint,
+            **common_norm
+        ) if checkpoint else RealESRGANModule(
             pretrained_path=str(PRETRAINED / "RealESRGAN_generator_x4.pth"),
-            **sr_common
+            **common_norm
         )
 
+
+    # ---------------- ResShift ----------------
     elif model_name == "resshift":
         from scripts.models.resshift import ResShiftModule
 
-        if checkpoint:
-            return ResShiftModule.load_from_checkpoint(checkpoint)
-
-        return ResShiftModule(
+        return ResShiftModule.load_from_checkpoint(checkpoint) if checkpoint else ResShiftModule(
             pretrained_path=str(PRETRAINED / "ResShift_x4.pth"),
             ae_path=str(PRETRAINED / "autoencoder_vq_f4.pth"),
             hr_mean=HR_MEAN,
@@ -102,7 +110,11 @@ def build_model(model_name, phase, checkpoint=None):
     raise ValueError(f"Unknown model: {model_name}")
 
 
-def run_inference(model_name, phase, checkpoint=None, use_water_metrics=False, group=None):
+# -----------------------------
+# INFERENCE
+# -----------------------------
+def run_inference(model_name, phase, checkpoint=None,
+                  use_water_metrics=False, group=None):
 
     print(f"\n{'═'*60}")
     print(f"Model : {model_name.upper()}")
@@ -160,55 +172,71 @@ def run_inference(model_name, phase, checkpoint=None, use_water_metrics=False, g
     return results
 
 
+# -----------------------------
+# BENCHMARK ALL MODELS
+# -----------------------------
 def run_all(phase, checkpoint_dir=None):
-    models      = ["edsr", "swinir", "hat", "realesrgan", "resshift"]
+
+    models = ["edsr", "swinir", "hat", "realesrgan", "resshift"]
     all_results = {}
 
     for model_name in models:
+
         ckpt = None
         if checkpoint_dir:
             ckpt_path = Path(checkpoint_dir) / f"{model_name}_best.ckpt"
             ckpt = str(ckpt_path) if ckpt_path.exists() else None
+
         try:
             results = run_inference(model_name, phase, ckpt)
+
             if results:
                 all_results[model_name] = results[0]
+
         except Exception as e:
             print(f"[ERROR] {model_name} failed: {e}")
             all_results[model_name] = {"error": str(e)}
 
-    # Comparison table 
     print(f"\n{'═'*60}")
     print(f"PHASE {phase} BENCHMARK SUMMARY")
     print(f"{'═'*60}")
+
     print(f"{'Model':<15} {'PSNR':>8} {'SSIM':>8} {'MAE':>8} {'RMSE':>8}")
     print(f"{'─'*15} {'─'*8} {'─'*8} {'─'*8} {'─'*8}")
 
     for name, metrics in all_results.items():
+
         if "error" in metrics:
             print(f"{name:<15} {'ERROR':>8}")
             continue
+
         print(
             f"{name:<15} "
             f"{metrics.get('test_psnr', 0):>8.4f} "
             f"{metrics.get('test_ssim', 0):>8.4f} "
-            f"{metrics.get('test_mae',  0):>8.4f} "
+            f"{metrics.get('test_mae', 0):>8.4f} "
             f"{metrics.get('test_rmse', 0):>8.4f}"
         )
 
     out = RESULTS_DIR / f"phase{phase}" / f"phase{phase}_comparison.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+
     with open(out, "w") as f:
         json.dump(all_results, f, indent=2)
-    print(f"\nComparison saved to {out}")
+
+    print(f"\nSaved → {out}")
 
 
+# -----------------------------
+# CLI
+# -----------------------------
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--model", type=str,
-                        choices=["edsr","swinir","hat","realesrgan","resshift"])
-    parser.add_argument("--phase", type=int, default=1, choices=[1,2])
+                        choices=["edsr", "swinir", "hat", "realesrgan", "resshift"])
+    parser.add_argument("--phase", type=int, default=1, choices=[1, 2])
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--use_water_metrics", action="store_true")
@@ -219,7 +247,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.all:
-        run_all(args.phase, args.checkpoint_dir)
+        run_all(args.phase)
 
     elif args.model:
         run_inference(

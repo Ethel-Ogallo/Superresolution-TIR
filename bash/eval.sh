@@ -5,7 +5,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-gpu=6
 #SBATCH --mem=32G
-# #SBATCH --output=logs/eval_phase1_%j.log
+#SBATCH --output=logs/eval_dev_%j.log
 # #SBATCH --error=logs/eval_phase1_%j.err
 
 # -------- Environment --------
@@ -36,11 +36,7 @@ python -m scripts.evaluation.eval \
     --model swinir \
     --phase 2 \
     --use_water_metrics \
-    --run_name "01_nn_eval" \
+    --project TIR_sisr \
+    --run_name 01_proj_aux_eval \
     --group model_dev \
-    --checkpoint checkpoints/phase2/swinir/swinir_phase2_epoch=21_val_psnr=21.6563.ckpt
-
-# checkpoints/phase2/edsr/edsr_phase2_epoch=69_val_psnr=20.9760.ckpt
-# checkpoints/phase2/hat/hat_phase2_epoch=16_val_psnr=21.2140.ckpt
-# checkpoints/phase2/realesrgan/realesrgan_phase2_epoch=33_val_psnr=19.9362.ckpt
-# checkpoints/phase2/swinir/swinir_phase2_epoch=21_val_psnr=21.6563.ckpt
+    --checkpoint checkpoints/model_dev/phase1/swinir/model_dev-epoch=34-val_full_psnr=34.4880.ckpt

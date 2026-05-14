@@ -9,27 +9,24 @@ from scripts.utils.metrics import shared_step
 
 
 # Projection module 
-class AuxProjectionCNN(nn.Module):
-    """
-    Learns a fused representation of:
-    TIR + AUX → 3-channel pseudo image
-    """
-
+class AuxProjection(nn.Module):
     def __init__(self, in_chans, out_chans=3):
         super().__init__()
-
         self.net = nn.Sequential(
-            nn.Conv2d(in_chans, 32, 3, padding=1),
+            nn.Conv2d(in_chans, 64, 3, padding=1),
             nn.ReLU(inplace=True),
-
-            nn.Conv2d(32, 32, 3, padding=1),
+            nn.Conv2d(64, 32, 3, padding=1),
             nn.ReLU(inplace=True),
-
             nn.Conv2d(32, out_chans, 1)
         )
+        # projects TIR from 1 → 3 channels to match output shape
+        self.tir_skip = nn.Conv2d(1, out_chans, kernel_size=1)
 
     def forward(self, x):
-        return self.net(x)
+        tir = x[:, 0:1, :, :]       # extract TIR channel
+        fused = self.net(x)          # full 21-channel fusion
+        skip = self.tir_skip(tir)    # TIR projected to 3 channels
+        return fused + skip          # TIR always contributes
 
 
 # SwinIR Lightning Module
@@ -50,10 +47,11 @@ class SwinIRModule(pl.LightningModule):
         hr_mean=None,
         hr_std=None,
         adaptation_strategy="projection",
-        phase = 2,
+        in_aux_chans=None,
+        lambda_grad=0.0,   
+        lambda_water=0.0,                
     ):
         super().__init__()
-
         self.save_hyperparameters()
 
         depths = depths or [6]*6
@@ -62,14 +60,18 @@ class SwinIRModule(pl.LightningModule):
         self.DATA_RANGE = data_range
         self.hr_mean = hr_mean
         self.hr_std = hr_std
-
         self.adaptation_strategy = adaptation_strategy
-
-        # lazy modules
-        self.proj = None
         self._input_adapted = False
+        self.lambda_grad = lambda_grad
+        self.lambda_water = lambda_water
 
-        # SwinIR backbone 
+        # Register proj properly — only if aux is being used with projection strategy
+        if adaptation_strategy == "projection" and in_aux_chans is not None:
+            self.proj = AuxProjection(1 + in_aux_chans, 3)  # 1 TIR + aux chans
+        else:
+            self.proj = None
+
+        # SwinIR backbone
         self.body = swinir_arch.SwinIR(
             upscale=4,
             in_chans=3,
@@ -84,18 +86,16 @@ class SwinIRModule(pl.LightningModule):
             resi_connection="1conv",
         )
 
-        # NEW: output head 
-        self.output_head = nn.Conv2d(
-            in_channels=3,
-            out_channels=1,
-            kernel_size=1
-        )
+        self.output_head = nn.Conv2d(3, 1, kernel_size=1)
 
-        # load pretrained AFTER architecture defined
         if pretrained_path:
             self._load_pretrained(pretrained_path)
+        
+        if adaptation_strategy == "direct" and in_aux_chans is not None:
+            self._adapt_input_layer(1 + in_aux_chans)
+            self._input_adapted = True
 
-    # ------- Input adaptation (projection only) --------
+    # ------- Input adaptation --------
     def _adapt_input_layer(self, in_chans):
 
         old_conv = self.body.conv_first
@@ -106,9 +106,13 @@ class SwinIRModule(pl.LightningModule):
             kernel_size=old_conv.kernel_size,
             stride=old_conv.stride,
             padding=old_conv.padding,
+        ).to(
+            device=old_conv.weight.device,
+            dtype=old_conv.weight.dtype
         )
 
         with torch.no_grad():
+
             new_conv.weight[:, :3] = old_conv.weight
 
             if in_chans > 3:
@@ -119,14 +123,21 @@ class SwinIRModule(pl.LightningModule):
             new_conv.bias.copy_(old_conv.bias)
 
         self.body.conv_first = new_conv
+
+        self.body.mean = torch.tensor(
+            0.0,
+            device=old_conv.weight.device,
+            dtype=old_conv.weight.dtype
+        )
+
+        self.body.img_range = 1.0
+
         print(f"[INFO] conv_first adapted - {in_chans} channels")
 
     # ------------ Forward ------------
     def forward(self, batch):
-
         lr = batch["lr"]
 
-        # baseline (no AUX)
         if "aux" not in batch or batch["aux"] is None:
             feat = self.body(lr)
             return self.output_head(feat)
@@ -134,24 +145,15 @@ class SwinIRModule(pl.LightningModule):
         aux = batch["aux"]
         x = torch.cat([lr, aux], dim=1)
 
-        # projection strategy
         if self.adaptation_strategy == "projection":
-
-            if self.proj is None:
-                self.proj = AuxProjectionCNN(x.shape[1], 3).to(x.device)
-                print(f"[INFO] projection built {x.shape[1]} - 3")
-
-            x = self.proj(x)
+            x = self.proj(x) 
 
         elif self.adaptation_strategy == "direct":
-            if not self._input_adapted:
-                self._adapt_input_layer(x.shape[1])
-                self._input_adapted = True
+            pass  
 
         else:
             raise ValueError("Unknown strategy")
 
-        # SwinIR backbone
         feat = self.body(x)
         return self.output_head(feat)
 
@@ -177,7 +179,26 @@ class SwinIRModule(pl.LightningModule):
     # -------- Optimizer --------
     def configure_optimizers(self):
 
-        opt = optim.Adam(self.parameters(), lr=self.hparams.learning_rate)
+        # separate parameter groups with different LRs
+        param_groups = [
+            {
+                "params": self.body.parameters(),  # pretrained backbone
+                "lr": self.hparams.learning_rate * 0.1  # 10x smaller
+            },
+            {
+                "params": self.output_head.parameters(),  # new head
+                "lr": self.hparams.learning_rate
+            },
+        ]
+
+        # only add proj group if it exists
+        if self.proj is not None:
+            param_groups.append({
+                "params": self.proj.parameters(),  # randomly initialized
+                "lr": self.hparams.learning_rate
+            })
+
+        opt = optim.Adam(param_groups)
 
         sch = optim.lr_scheduler.ReduceLROnPlateau(
             opt,
@@ -196,20 +217,20 @@ class SwinIRModule(pl.LightningModule):
 
     # ------- Pretrained loading --------
     def _load_pretrained(self, path):
-
         if not os.path.exists(path):
             print(f"[WARNING] missing {path}")
             return
 
         ckpt = torch.load(path, map_location="cpu", weights_only=True)
         state = ckpt.get("params", ckpt)
-
         model_dict = self.body.state_dict()
 
         matched = {
             k: v for k, v in state.items()
             if k in model_dict and v.shape == model_dict[k].shape
         }
+        unmatched = [k for k in state if k not in matched]  # ADD THIS
 
         self.body.load_state_dict(matched, strict=False)
         print(f"[INFO] loaded {len(matched)} SwinIR layers")
+        print(f"[INFO] {len(unmatched)} keys not loaded: {unmatched[:5]}")  # ADD THIS
