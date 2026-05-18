@@ -1,11 +1,9 @@
 #!/bin/bash -l
-# eval.sh — Phase 1 zero-shot inference for all models
-
 #SBATCH --job-name=sisr_eval_phase1
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-gpu=6
 #SBATCH --mem=32G
-#SBATCH --output=logs/eval_dev_%j.log
+# #SBATCH --output=logs/eval_dev_%j.log
 # #SBATCH --error=logs/eval_phase1_%j.err
 
 # -------- Environment --------
@@ -32,11 +30,20 @@ cd /share/castor/home/e2406751/Superresolution-TIR
 #     --group benchmark_phase1
 
 # phase 2
+# python -m scripts.evaluation.eval \
+#     --model swinir \
+#     --phase 2 \
+#     --use_water_metrics \
+#     --project TIR_sisr \
+#     --run_name 01_proj_aux_eval \
+#     --group model_dev \
+#     --checkpoint checkpoints/model_dev/phase1/swinir/model_dev-epoch=34-val_full_psnr=34.4880.ckpt
+
 python -m scripts.evaluation.eval \
-    --model swinir \
-    --phase 2 \
-    --use_water_metrics \
-    --project TIR_sisr \
-    --run_name 01_proj_aux_eval \
-    --group model_dev \
-    --checkpoint checkpoints/model_dev/phase1/swinir/model_dev-epoch=34-val_full_psnr=34.4880.ckpt
+  --model swinir \
+  --checkpoint checkpoints/dev_v2/swinir/best-epoch=68-val_full_psnr=18.0997.ckpt \
+  --use_aux 1 \
+  --adaptation_strategy fusion \
+  --project TIR_sisr \
+  --run_name 01_fusion_eval \
+  --group model_dev_v2 \
