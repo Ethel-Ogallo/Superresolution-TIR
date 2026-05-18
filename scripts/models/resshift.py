@@ -38,7 +38,8 @@ class ResShiftModule(pl.LightningModule):
         ae_path: str          = None,
         hr_mean: float        = 0.0,
         hr_std: float         = 1.0,
-        data_range: float     = 70.0,
+        data_range: float     = None,
+        data_min: float       = None,
         learning_rate: float  = 1e-4,
         num_steps: int        = 15,
         scale: int            = 4,
@@ -47,6 +48,7 @@ class ResShiftModule(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
         self.DATA_RANGE      = float(data_range)
+        self.DATA_MIN        = float(data_min)
         self._sampler        = None
         self.pretrained_path = pretrained_path
         self.ae_path         = ae_path

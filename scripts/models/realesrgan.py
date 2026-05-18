@@ -33,6 +33,7 @@ class RealESRGANModule(pl.LightningModule):
         n_feats: int             = 64,
         n_blocks: int            = 23,
         data_range: float        = None,
+        data_min: float          = None,
         phase: int               = 1,
         lambda_perceptual: float = 1.0,
         lambda_adversarial: float = 0.1,
@@ -40,6 +41,7 @@ class RealESRGANModule(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
         self.DATA_RANGE = float(data_range)
+        self.DATA_MIN   = float(data_min)
 
         #  Generator + reconstruction loss (both phases)
         self.net_g = rrdbnet_arch.RRDBNet(

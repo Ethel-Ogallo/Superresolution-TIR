@@ -30,11 +30,13 @@ class SwinIRModule(pl.LightningModule):
         mlp_ratio: float      = 2.0,
         upsampler: str        = "pixelshuffle",
         data_range: float     = None,
+        data_min: float       = None,
         phase: int            = 1,
     ):
         super().__init__()
         self.save_hyperparameters()
         self.DATA_RANGE = float(data_range)
+        self.DATA_MIN   = float(data_min)
 
         depths    = depths    or [6, 6, 6, 6, 6, 6]
         num_heads = num_heads or [6, 6, 6, 6, 6, 6]

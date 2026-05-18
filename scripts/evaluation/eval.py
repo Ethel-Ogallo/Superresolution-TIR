@@ -26,6 +26,7 @@ with open(STATS_PATH) as f:
 HR_MEAN    = stats["hr"]["mean"]
 HR_STD     = stats["hr"]["std"]
 DATA_RANGE = stats["hr_data_range"]
+DATA_MIN   = stats["hr_percentiles"]["p1"]
 
 
 def build_model(model_name, phase, checkpoint=None):
@@ -39,6 +40,7 @@ def build_model(model_name, phase, checkpoint=None):
     sr_common = dict(
         **common_norm,
         data_range=DATA_RANGE,
+        data_min=DATA_MIN,
         phase = phase,
     )
 
