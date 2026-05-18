@@ -1,14 +1,12 @@
 # scripts/utils/metrics.py
 
 import torch
-from torchmetrics.image import (
-    PeakSignalNoiseRatio,
-    StructuralSimilarityIndexMeasure,
-)
+from torchmetrics.image import StructuralSimilarityIndexMeasure
+
 from scripts.utils.loss import masked_l1, combined_loss, gradient_loss, water_aware_loss
 
 
-# ------ Helpers -------------
+# ---------------- Masks ----------------
 
 def build_masks(hr_mask, water_mask):
     full = hr_mask
@@ -16,106 +14,72 @@ def build_masks(hr_mask, water_mask):
     if water_mask is None:
         return full, None, None
 
-    water = hr_mask * water_mask
+    water    = hr_mask * water_mask
     nonwater = hr_mask * (1.0 - water_mask)
 
     return full, water, nonwater
 
 
-def fill_invalid(sr, hr, mask):
-    sr_out = sr.float().clone()
-    hr_out = hr.float().clone()
-
-    for b in range(hr.shape[0]):
-        valid = hr_out[b][mask[b] > 0.5]
-
-        fill = valid.mean() if valid.numel() > 0 else torch.tensor(0.0, device=hr.device)
-        if not torch.isfinite(fill):
-            fill = torch.tensor(0.0, device=hr.device)
-
-        inv = mask[b] <= 0.5
-        sr_out[b][inv] = fill
-        hr_out[b][inv] = fill
-
-    return sr_out, hr_out
-
+# ---------------- Metric computation ----------------
 
 def _compute_single_metric_set(sr, hr, mask, module, prefix, sync_dist):
 
-    valid = mask > 0.5
+    mask = mask > 0.5
 
-    if valid.sum() == 0:
+    if mask.sum() == 0:
         for m in ["psnr", "ssim", "mae", "rmse"]:
-            module.log(
-                f"{prefix}_{m}",
-                torch.tensor(0.0, device=sr.device),
-                on_step=False,
-                on_epoch=True,
-                sync_dist=sync_dist
-            )
+            module.log(f"{prefix}_{m}", torch.tensor(0.0, device=sr.device),
+                       on_step=False, on_epoch=True, sync_dist=sync_dist)
         return
 
-    # MAE and RMSE
-    err = (sr - hr)[valid]
-    mae = err.abs().mean()
-    rmse = err.pow(2).mean().sqrt()
+    sr_valid = sr[mask]
+    hr_valid = hr[mask]
 
-    # PSNR
-    sr_f, hr_f = fill_invalid(sr, hr, mask)
+    mae  = torch.abs(sr_valid - hr_valid).mean()
+    rmse = torch.sqrt(((sr_valid - hr_valid) ** 2).mean())
+    mse  = ((sr_valid - hr_valid) ** 2).mean()
+    psnr = 10 * torch.log10((module.DATA_RANGE ** 2) / (mse + 1e-8))
 
-    psnr_fn = PeakSignalNoiseRatio(data_range=module.DATA_RANGE).to(sr.device)
-    psnr = psnr_fn(
-        sr_f.clamp(0, module.DATA_RANGE),
-        hr_f.clamp(0, module.DATA_RANGE)
-    )
+    # --- SSIM: per-sample, normalised to [0,1], minimum size guard ---
+    MIN_SSIM_SIZE = 11
+    ssim_fn       = StructuralSimilarityIndexMeasure(data_range=1.0).to(sr.device)
+    ssim_scores   = []
 
-    if not torch.isfinite(psnr):
-        psnr = torch.tensor(0.0, device=sr.device)
+    for b in range(sr.shape[0]):
+        valid_b = mask[b, 0] if mask.dim() == 4 else mask[b]
 
-    # SSIM
-    if min(sr.shape[-2], sr.shape[-1]) >= 11:
+        if valid_b.sum() == 0:
+            continue
 
-        ssim_fn = StructuralSimilarityIndexMeasure(
-            data_range=module.DATA_RANGE
-        ).to(sr.device)
+        coords = torch.where(valid_b)
+        ymin, ymax = coords[0].min().item(), coords[0].max().item()
+        xmin, xmax = coords[1].min().item(), coords[1].max().item()
 
-        sr_ssim = sr.clone()
-        hr_ssim = hr.clone()
+        if (ymax - ymin + 1) < MIN_SSIM_SIZE or (xmax - xmin + 1) < MIN_SSIM_SIZE:
+            continue
 
-        sr_ssim[mask <= 0.5] = 0.0
-        hr_ssim[mask <= 0.5] = 0.0
+        sr_crop = sr[b:b+1, :, ymin:ymax+1, xmin:xmax+1]
+        hr_crop = hr[b:b+1, :, ymin:ymax+1, xmin:xmax+1]
 
-        ssim = ssim_fn(
-            sr_ssim.clamp(0, module.DATA_RANGE),
-            hr_ssim.clamp(0, module.DATA_RANGE),
-        )
+        # normalise to [0,1] using physical range before SSIM
+        # DATA_MIN = p1 (~20.76°C), DATA_RANGE = p99-p1 (~27.59°C)
+        sr_norm = (sr_crop - module.DATA_MIN) / module.DATA_RANGE
+        hr_norm = (hr_crop - module.DATA_MIN) / module.DATA_RANGE
+        sr_norm = sr_norm.clamp(0, 1)
+        hr_norm = hr_norm.clamp(0, 1)
 
-        if not torch.isfinite(ssim):
-            ssim = torch.tensor(0.0, device=sr.device)
+        ssim_scores.append(ssim_fn(sr_norm, hr_norm))
 
-    else:
-        ssim = torch.tensor(0.0, device=sr.device)
+    ssim = torch.stack(ssim_scores).mean() if ssim_scores \
+        else torch.tensor(0.0, device=sr.device)
 
-    module.log(f"{prefix}_psnr", psnr,
-               on_step=False, on_epoch=True,
-               prog_bar=(prefix == "full"),
-               sync_dist=sync_dist)
-
-    module.log(f"{prefix}_ssim", ssim,
-               on_step=False, on_epoch=True,
-               sync_dist=sync_dist)
-
-    module.log(f"{prefix}_mae", mae,
-               on_step=False, on_epoch=True,
-               prog_bar=(prefix == "full"),
-               sync_dist=sync_dist)
-
-    module.log(f"{prefix}_rmse", rmse,
-               on_step=False, on_epoch=True,
-               sync_dist=sync_dist)
+    module.log(f"{prefix}_psnr", psnr, on_step=False, on_epoch=True, sync_dist=sync_dist)
+    module.log(f"{prefix}_ssim", ssim, on_step=False, on_epoch=True, sync_dist=sync_dist)
+    module.log(f"{prefix}_mae",  mae,  on_step=False, on_epoch=True, sync_dist=sync_dist)
+    module.log(f"{prefix}_rmse", rmse, on_step=False, on_epoch=True, sync_dist=sync_dist)
 
 
-# ---------- Main metric functions ---------
+# ---------------- Main ----------------
 
 def compute_metrics(module, sr, hr, hr_mask, stage, water_mask=None):
 
@@ -137,13 +101,13 @@ def compute_metrics(module, sr, hr, hr_mask, stage, water_mask=None):
                                    module, f"{stage}_nonwater", sync_dist)
 
 
-# ---------- Shared step ----------
+# ---------------- Shared step ----------------
 
 def shared_step(module, batch, stage: str):
 
-    lr = batch["lr"]
-    hr = batch["hr"]
-    hr_mask = batch["hr_mask"]
+    lr       = batch["lr"]
+    hr       = batch["hr"]
+    hr_mask  = batch["hr_mask"]
     water_mask = batch.get("water_mask", None)
 
     if water_mask is not None:
@@ -151,20 +115,20 @@ def shared_step(module, batch, stage: str):
 
     sr_img = module(batch)
 
+    # sr_img is [B, 1, H*4, W*4] for all strategies
+    # hr     is [B, 1, H*4, W*4] — patches are stored at HR resolution
     sr = module.denormalize(sr_img[:, 0:1])
     hr = module.denormalize(hr[:, 0:1])
 
-    # log each component separately for lambda tuning
-    l1   = masked_l1(sr, hr, hr_mask)
-    grad = gradient_loss(sr, hr, hr_mask)
+    l1    = masked_l1(sr, hr, hr_mask)
+    grad  = gradient_loss(sr, hr, hr_mask)
     water = water_aware_loss(sr, hr, hr_mask, water_mask) if water_mask is not None \
             else torch.tensor(0.0, device=sr.device)
 
-    module.log(f"{stage}_l1_loss",    l1,    on_step=False, on_epoch=True)
-    module.log(f"{stage}_grad_loss",  grad,  on_step=False, on_epoch=True)
-    module.log(f"{stage}_water_loss", water, on_step=False, on_epoch=True)
+    module.log(f"{stage}_l1_loss",    l1,    on_epoch=True)
+    module.log(f"{stage}_grad_loss",  grad,  on_epoch=True)
+    module.log(f"{stage}_water_loss", water, on_epoch=True)
 
-    # combined loss using cli lambdas
     loss = combined_loss(
         sr, hr, hr_mask,
         water_mask=water_mask,

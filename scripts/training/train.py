@@ -30,7 +30,7 @@ PATCHES_DIR = BASE / "data/processed/patches"
 STATS_PATH  = PATCHES_DIR / "stats.json"
 PRETRAINED  = BASE / "data/pretrained"
 CONFIGS_DIR = BASE / "configs"
-CKPT_DIR    = BASE / "checkpoints/model_dev/phase1"
+CKPT_DIR    = BASE / "checkpoints/dev_v2"
 CKPT_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -58,10 +58,10 @@ def get_model_class(model_name):
 
 
 # Build model
-def build_model(model_name, cfg, stats, args, in_aux_chans=None):  
-
+def build_model(model_name, cfg, stats, args, aux_chans=None):  
     cls = get_model_class(model_name)
     pretrained_path = str(PRETRAINED / "SwinIR_classical_x4.pth")
+    
     skip_keys = {"model_class", "precision"}
     arch_kwargs = {k: v for k, v in cfg.items() if k not in skip_keys}
 
@@ -69,13 +69,14 @@ def build_model(model_name, cfg, stats, args, in_aux_chans=None):
         **arch_kwargs,
         pretrained_path=pretrained_path,
         learning_rate=args.lr,
-        in_aux_chans=in_aux_chans,
-        hr_mean=stats["hr"]["mean"],
-        hr_std=stats["hr"]["std"],
-        data_range=stats["hr_data_range"],
+        aux_chans=aux_chans,                   
         adaptation_strategy=args.adaptation_strategy,
         lambda_grad=args.lambda_grad,    
         lambda_water=args.lambda_water,  
+        hr_mean=stats["hr"]["mean"],
+        hr_std=stats["hr"]["std"],
+        data_range=stats["hr_data_range"],
+        data_min=stats["hr_percentiles"]["p1"],
     )
 
 # ------------ Training pipeline ----------------
@@ -137,13 +138,12 @@ def run(args):
     # MODEL
     if USE_AUX:
         sample = train_ds[0]
-        in_aux_chans = sample["aux"].shape[0]
-        print(f"[INFO] AUX channels detected: {in_aux_chans}")
+        aux_chans = sample["aux"].shape[0]
+        print(f"[INFO] AUX channels detected: {aux_chans}")
     else:
-        in_aux_chans = None
+        aux_chans = None
 
-    # MODEL
-    model = build_model(args.model, cfg, stats, args, in_aux_chans)
+    model = build_model(args.model, cfg, stats, args, aux_chans)
 
     # LOGGER
     wandb_logger = WandbLogger(
@@ -227,7 +227,7 @@ def parse_args():
     p.add_argument("--run_name", default=None)
     p.add_argument("--group", default=None)
     p.add_argument("--use_aux", type=int, default=1)
-    p.add_argument("--adaptation_strategy", type=str, default="projection",choices=["projection", "direct"])
+    p.add_argument("--adaptation_strategy", type=str, default="projection", choices=["projection", "direct", "fusion"])  
     p.add_argument("--lambda_grad", type=float, default=0.0)   
     p.add_argument("--lambda_water", type=float, default=0.0)  
 
