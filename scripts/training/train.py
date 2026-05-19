@@ -101,6 +101,7 @@ def build_model(model_name, cfg, stats, args):
         hr_mean       = stats["hr"]["mean"],
         hr_std        = stats["hr"]["std"],
         data_range    = stats["hr_data_range"],
+        data_min      = stats["hr_percentiles"]["p1"],
         learning_rate = args.lr,
         phase         = 2,
     )
