@@ -25,11 +25,11 @@ python -m scripts.training.train \
     --patience 30 \
     --num_workers 4 \
     --use_aux 1 \
-    --lambda_grad 0.0 \
-    --lambda_water 0.0 \
-    --adaptation_strategy fusion \
+    --lambda_grad 0.1 \
+    --lambda_water 0.5 \
+    --adaptation_strategy projection \
     --project TIR_sisr \
-    --run_name 03_fusion_aux \
+    --run_name g+w_proj_aux \
     --group model_dev_v2
 
 # python -m scripts.training.train \
