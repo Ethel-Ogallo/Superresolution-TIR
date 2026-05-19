@@ -28,9 +28,10 @@ from scripts.utils.data_aug import train_transforms
 BASE        = Path("/share/home/e2406751/Superresolution-TIR")
 PATCHES_DIR = BASE / "data/processed/patches"
 STATS_PATH  = PATCHES_DIR / "stats.json"
+METADATA_PATH = PATCHES_DIR / "metadata.json"
 PRETRAINED  = BASE / "data/pretrained"
 CONFIGS_DIR = BASE / "configs"
-CKPT_DIR    = BASE / "checkpoints/dev_v2"
+CKPT_DIR    = BASE / "checkpoints/dev_v3"
 CKPT_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -72,7 +73,8 @@ def build_model(model_name, cfg, stats, args, aux_chans=None):
         aux_chans=aux_chans,                   
         adaptation_strategy=args.adaptation_strategy,
         lambda_grad=args.lambda_grad,    
-        lambda_water=args.lambda_water,  
+        lambda_water=args.lambda_water,
+        time_mode=args.time_mode,  
         hr_mean=stats["hr"]["mean"],
         hr_std=stats["hr"]["std"],
         data_range=stats["hr_data_range"],
@@ -99,33 +101,39 @@ def run(args):
         split="train",
         patches_dir=PATCHES_DIR,
         stats_path=STATS_PATH,
+        metadata_path=METADATA_PATH,   
         use_aux=USE_AUX,
         use_water_mask=True,
         aux_dir=str(PATCHES_DIR / "train" / "AUX") if USE_AUX else None,
         repeat_channels=False if USE_AUX else True,
         transform=transforms,
+        time_mode=args.time_mode,
     )
 
     val_ds = SRDataset(
         split="val",
         patches_dir=PATCHES_DIR,
         stats_path=STATS_PATH,
+        metadata_path=METADATA_PATH,   
         use_aux=USE_AUX,
         use_water_mask=True,
         aux_dir=str(PATCHES_DIR / "val" / "AUX") if USE_AUX else None,
         repeat_channels=False if USE_AUX else True,
         transform=None,
+        time_mode=args.time_mode,
     )
 
     test_ds = SRDataset(
         split="test",
         patches_dir=PATCHES_DIR,
         stats_path=STATS_PATH,
+        metadata_path=METADATA_PATH,  
         use_aux=USE_AUX,
         use_water_mask=True,   
         aux_dir=str(PATCHES_DIR / "test" / "AUX") if USE_AUX else None,
         repeat_channels=False if USE_AUX else True,
         transform=None,
+        time_mode=args.time_mode,
     )
 
     loader_kw = dict(num_workers=args.num_workers, pin_memory=True)
@@ -148,7 +156,7 @@ def run(args):
     # LOGGER
     wandb_logger = WandbLogger(
         project=args.project,
-        name=args.run_name or f"{args.model}_aux{int(USE_AUX)}",
+        name=args.run_name or (f"{args.model}_"f"{args.adaptation_strategy}_"f"time-{args.time_mode}"),
         group=args.group,
         config={**cfg, **vars(args)},
     )
@@ -230,6 +238,8 @@ def parse_args():
     p.add_argument("--adaptation_strategy", type=str, default="projection", choices=["projection", "direct", "fusion"])  
     p.add_argument("--lambda_grad", type=float, default=0.0)   
     p.add_argument("--lambda_water", type=float, default=0.0)  
+    p.add_argument("--time_mode", type=str, default="none", choices=["none", "date", "time", "both"]
+)
 
     return p.parse_args()
 

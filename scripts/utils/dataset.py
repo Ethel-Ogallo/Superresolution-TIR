@@ -12,13 +12,13 @@ class SRDataset(Dataset):
         split,
         patches_dir,
         stats_path,
-        # Input modes
+        metadata_path,   
         use_water_mask=False,
-        repeat_channels=False,   # keep for baseline compatibility
-        use_aux=False, 
+        repeat_channels=False,
+        use_aux=False,
         aux_dir=None,
-
         transform=None,
+        time_mode="both",  # "none", "date", "time", "both"
     ):
 
         self.split = split
@@ -31,7 +31,10 @@ class SRDataset(Dataset):
         self.use_aux = use_aux
         self.aux_dir = Path(aux_dir) if aux_dir is not None else None
 
+        self.time_mode = time_mode
+        # -----------------------------
         # STATS
+        # -----------------------------
         with open(stats_path) as f:
             stats = json.load(f)
 
@@ -40,11 +43,18 @@ class SRDataset(Dataset):
         self.lr_mean = stats["lr"]["mean"]
         self.lr_std  = stats["lr"]["std"]
 
+        # -----------------------------
+        # METADATA (FiLM SOURCE)
+        # -----------------------------
+        with open(metadata_path) as f:
+            self.metadata = json.load(f)
+
+        # -----------------------------
         # PATHS
+        # -----------------------------
         self.hr_dir = self.patches_dir / split / "HR"
         self.lr_dir = self.patches_dir / split / "LR"
         self.wm_dir = self.patches_dir / split / "WM"
-
 
         self.files = sorted([f.name for f in self.hr_dir.glob("*.npy")])
 
@@ -52,8 +62,13 @@ class SRDataset(Dataset):
         return len(self.files)
 
     def __getitem__(self, idx):
-        fname = self.files[idx]
 
+        fname = self.files[idx]
+        key = fname.replace(".npy", "")
+
+        # -----------------------------
+        # LOAD DATA
+        # -----------------------------
         hr = np.load(self.hr_dir / fname).astype(np.float32)
         lr = np.load(self.lr_dir / fname).astype(np.float32)
 
@@ -66,15 +81,22 @@ class SRDataset(Dataset):
         hr = (hr - self.hr_mean) / self.hr_std
         lr = (lr - self.lr_mean) / self.lr_std
 
+        # -----------------------------
+        # AUX (optional)
+        # -----------------------------
         aux = None
         if self.use_aux and self.aux_dir is not None:
             aux = np.load(self.aux_dir / fname).astype(np.float32)
 
-        # PASS AUX INTO TRANSFORM
+        # -----------------------------
+        # TRANSFORM
+        # -----------------------------
         if self.transform:
             lr, hr, hr_mask, aux = self.transform(lr, hr, hr_mask, aux)
 
-        # channel handling
+        # -----------------------------
+        # CHANNEL HANDLING
+        # -----------------------------
         if self.repeat_channels:
             hr = np.stack([hr] * 3, axis=0)
             lr = np.stack([lr] * 3, axis=0)
@@ -82,28 +104,72 @@ class SRDataset(Dataset):
             hr = hr[None]
             lr = lr[None]
 
-        hr       = torch.from_numpy(hr).float()
-        lr       = torch.from_numpy(lr).float()
-        hr_mask  = torch.from_numpy(hr_mask)[None].float()
-        lr_mask  = torch.from_numpy(lr_mask)[None].float()
+        hr = torch.from_numpy(hr).float()
+        lr = torch.from_numpy(lr).float()
+        hr_mask = torch.from_numpy(hr_mask)[None].float()
+        lr_mask = torch.from_numpy(lr_mask)[None].float()
 
+        # -----------------------------
+        # WATER MASK
+        # -----------------------------
         water_mask = None
         if self.use_water_mask:
             wm = np.load(self.wm_dir / fname).astype(np.float32)
             water_mask = torch.from_numpy(wm)[None].float()
 
+        # ============================
+        # FiLM CONDITION VECTOR (NORMALIZED)
+        # ============================
+        meta = self.metadata.get(key, None)
+
+        if meta is not None:
+
+            if self.time_mode == "none":
+                cond = np.zeros(1, dtype=np.float32)
+
+            elif self.time_mode == "date":
+                cond = np.array([
+                    meta.get("date_gap_days", 0.0) / 30.0
+                ], dtype=np.float32)
+
+            elif self.time_mode == "time":
+                cond = np.array([
+                    meta.get("time_gap_hours", 0.0) / 24.0
+                ], dtype=np.float32)
+
+            else:  # both
+                cond = np.array([
+                    meta.get("date_gap_days", 0.0) / 30.0,
+                    meta.get("time_gap_hours", 0.0) / 24.0
+                ], dtype=np.float32)
+
+        else:
+
+            if self.time_mode == "none":
+                cond = np.array([], dtype=np.float32)
+
+            elif self.time_mode in ["date", "time"]:
+                cond = np.zeros(1, dtype=np.float32)
+
+            else:
+                cond = np.zeros(2, dtype=np.float32)
+
+        # -----------------------------
+        # FINAL SAMPLE
+        # -----------------------------
         sample = {
-            "lr":      lr,
-            "hr":      hr,
+            "lr": lr,
+            "hr": hr,
             "hr_mask": hr_mask,
             "lr_mask": lr_mask,
-            "fname":   fname,
+            "fname": fname,
+            "cond": torch.from_numpy(cond).float(),  
         }
-
-        if water_mask is not None:
-            sample["water_mask"] = water_mask
 
         if aux is not None:
             sample["aux"] = torch.from_numpy(aux).float()
+
+        if water_mask is not None:
+            sample["water_mask"] = water_mask
 
         return sample

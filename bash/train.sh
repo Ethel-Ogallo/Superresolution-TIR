@@ -15,7 +15,7 @@ conda activate sisr
 
 # -------- Project root (all relative paths resolve from here) --------
 cd /share/castor/home/e2406751/Superresolution-TIR
-mkdir -p logs checkpoints/dev_v2
+mkdir -p logs checkpoints/dev_v3
 
 python -m scripts.training.train \
     --model swinir \
@@ -27,10 +27,11 @@ python -m scripts.training.train \
     --use_aux 1 \
     --lambda_grad 0.1 \
     --lambda_water 0.5 \
+    --time_mode both \
     --adaptation_strategy projection \
     --project TIR_sisr \
-    --run_name g+w_proj_aux \
-    --group model_dev_v2
+    --run_name 04_film_both \
+    --group model_dev_v3
 
 # python -m scripts.training.train \
 #     --model swinir \
