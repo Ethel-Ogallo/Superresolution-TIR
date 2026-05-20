@@ -71,6 +71,7 @@ class SwinIRModule(pl.LightningModule):
         aux_chans=None,
         lambda_grad=0.0,
         lambda_water=0.0,
+        water_weight=2.0,
         **kwargs
     ):
         super().__init__()
@@ -83,6 +84,7 @@ class SwinIRModule(pl.LightningModule):
         self.hr_std       = hr_std
         self.lambda_grad  = lambda_grad
         self.lambda_water = lambda_water
+        self.water_weight = water_weight
         self.strategy     = adaptation_strategy
         self.aux_chans    = aux_chans
 

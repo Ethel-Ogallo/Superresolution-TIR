@@ -1,8 +1,8 @@
-#!/bin/bash -l
-#SBATCH --job-name=sisr_train_phase2
-#SBATCH --gres=gpu:1
-#SBATCH --cpus-per-gpu=6
-#SBATCH --mem=32G
+# #!/bin/bash -l
+# #SBATCH --job-name=sisr
+# #SBATCH --gres=gpu:1
+# #SBATCH --cpus-per-task=6
+# #SBATCH --mem=32G
 # #SBATCH --output=logs/01_fusion_aux_%j.log
 # #SBATCH --output=logs/dir_aux_%j.log
 
@@ -15,7 +15,7 @@ conda activate sisr
 
 # -------- Project root (all relative paths resolve from here) --------
 cd /share/castor/home/e2406751/Superresolution-TIR
-mkdir -p logs checkpoints/dev_v2
+# mkdir -p logs checkpoints/dev_v2
 
 python -m scripts.training.train \
     --model swinir \
@@ -25,11 +25,11 @@ python -m scripts.training.train \
     --patience 30 \
     --num_workers 4 \
     --use_aux 1 \
-    --lambda_grad 0.1 \
+    --lambda_grad 0.0 \
     --lambda_water 0.5 \
     --adaptation_strategy projection \
     --project TIR_sisr \
-    --run_name g+w_proj_aux \
+    --run_name w2_proj_aux \
     --group model_dev_v2
 
 # python -m scripts.training.train \

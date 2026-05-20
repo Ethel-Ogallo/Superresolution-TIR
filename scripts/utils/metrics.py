@@ -3,7 +3,7 @@
 import torch
 from torchmetrics.image import StructuralSimilarityIndexMeasure
 
-from scripts.utils.loss import masked_l1, combined_loss, gradient_loss, water_aware_loss
+from scripts.utils.loss import masked_l1, combined_loss, gradient_loss, water_weighted_loss
 
 
 # ---------------- Masks ----------------
@@ -105,30 +105,46 @@ def compute_metrics(module, sr, hr, hr_mask, stage, water_mask=None):
 
 def shared_step(module, batch, stage: str):
 
-    lr       = batch["lr"]
-    hr       = batch["hr"]
-    hr_mask  = batch["hr_mask"]
+    lr        = batch["lr"]
+    hr        = batch["hr"]
+    hr_mask   = batch["hr_mask"]
     water_mask = batch.get("water_mask", None)
 
     if water_mask is not None:
         water_mask = water_mask.to(hr_mask.device)
 
+    # forward pass
     sr_img = module(batch)
 
-    # sr_img is [B, 1, H*4, W*4] for all strategies
-    # hr     is [B, 1, H*4, W*4] — patches are stored at HR resolution
+    # denormalize
     sr = module.denormalize(sr_img[:, 0:1])
     hr = module.denormalize(hr[:, 0:1])
 
-    l1    = masked_l1(sr, hr, hr_mask)
-    grad  = gradient_loss(sr, hr, hr_mask)
-    water = water_aware_loss(sr, hr, hr_mask, water_mask) if water_mask is not None \
-            else torch.tensor(0.0, device=sr.device)
+    # -------------------
+    # losses
+    # -------------------
+    l1   = masked_l1(sr, hr, hr_mask)
+    grad = gradient_loss(sr, hr, hr_mask)
 
-    module.log(f"{stage}_l1_loss",    l1,    on_epoch=True)
-    module.log(f"{stage}_grad_loss",  grad,  on_epoch=True)
+    if water_mask is not None:
+        water = water_weighted_loss(
+            sr, hr, hr_mask, water_mask,
+            water_weight=module.water_weight,
+            land_weight=1.0
+        )
+    else:
+        water = torch.zeros((), device=sr.device)
+
+    # -------------------
+    # logging
+    # -------------------
+    module.log(f"{stage}_l1_loss", l1, on_epoch=True)
+    module.log(f"{stage}_grad_loss", grad, on_epoch=True)
     module.log(f"{stage}_water_loss", water, on_epoch=True)
 
+    # -------------------
+    # total loss 
+    # -------------------
     loss = combined_loss(
         sr, hr, hr_mask,
         water_mask=water_mask,
@@ -136,11 +152,11 @@ def shared_step(module, batch, stage: str):
         lambda_water=module.lambda_water,
     )
 
-    module.log(f"{stage}_loss", loss,
-               on_step=(stage == "train"),
-               on_epoch=True,
-               prog_bar=True)
+    module.log(f"{stage}_loss",loss,on_step=(stage == "train"), on_epoch=True,prog_bar=True)
 
+    # -------------------
+    # metrics
+    # -------------------
     with torch.no_grad():
         compute_metrics(module, sr, hr, hr_mask, stage, water_mask)
 
