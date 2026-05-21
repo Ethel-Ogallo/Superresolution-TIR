@@ -106,6 +106,7 @@ class SwinIRModule(pl.LightningModule):
         aux_chans=None,
         lambda_grad=0.0,
         lambda_water=0.0,
+        water_weight=2.0,
         **kwargs
     ):
         super().__init__()
@@ -118,6 +119,7 @@ class SwinIRModule(pl.LightningModule):
         self.hr_std       = hr_std
         self.lambda_grad  = lambda_grad
         self.lambda_water = lambda_water
+        self.water_weight = water_weight
         self.strategy     = adaptation_strategy
         self.aux_chans    = aux_chans
 
@@ -259,36 +261,6 @@ class SwinIRModule(pl.LightningModule):
 
             feat = self.body.conv_first(x)
 
-            # FiLM injection 
-            if self.use_time and cond is not None and self.cond_dim > 0:
-
-                gamma, beta = self.film(cond)
-
-                gamma = gamma.unsqueeze(-1).unsqueeze(-1)
-                beta  = beta.unsqueeze(-1).unsqueeze(-1)
-
-                feat = gamma * feat + beta
-
-            # SwinIR backbone
-            feat = self.body.forward_features(feat)
-            feat = self.body.conv_after_body(feat)
-            feat = self.body.conv_before_upsample(feat)
-            feat = self.body.upsample(feat)
-            feat = self.body.conv_last(feat)
-
-            out = self.proj_out(feat)
-
-            return out
-
-        # =====================================================
-        # FUSION  
-        # =====================================================
-        if self.strategy == "projection":
-
-            x = self.proj(lr, aux)
-
-            feat = self.body.conv_first(x)
-
             if (
                 self.use_time
                 and self.film is not None
@@ -309,6 +281,41 @@ class SwinIRModule(pl.LightningModule):
             feat = self.body.conv_last(feat)
 
             out = self.proj_out(feat)
+
+            return out
+
+        # =====================================================
+        # FUSION  
+        # =====================================================
+        if self.strategy == "fusion":
+
+            # Prepare SwinIR input (TIR only)
+            x = lr.repeat(1, 3, 1, 1)
+
+            # Shallow feature extraction (IMPORTANT FIX)
+            feat = self.body.conv_first(x)
+
+            #  AUX feature encoding
+            aux_feat = self.aux_encoder(aux)
+
+            # match spatial resolution if needed
+            if aux_feat.shape[-2:] != feat.shape[-2:]:
+                aux_feat = F.interpolate(
+                    aux_feat,
+                    size=feat.shape[-2:],
+                    mode="bilinear",
+                    align_corners=False
+                )
+
+
+            feat = self.fusion(feat, aux_feat)  #  EARLY FEATURE FUSION (FAIR VERSION)
+            feat = self.body.forward_features(feat)
+            feat = self.body.conv_after_body(feat)
+            feat = self.body.conv_before_upsample(feat)
+            feat = self.body.upsample(feat)
+            feat = self.body.conv_last(feat)
+
+            out = self.fusion_out(feat)
 
             return out
 

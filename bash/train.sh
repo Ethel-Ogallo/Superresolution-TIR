@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --job-name=sisr_train_phase2
+#SBATCH --job-name=sisr
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-gpu=6
 #SBATCH --mem=32G
@@ -25,12 +25,12 @@ python -m scripts.training.train \
     --patience 30 \
     --num_workers 4 \
     --use_aux 1 \
-    --lambda_grad 0.1 \
+    --lambda_grad 0.3 \
     --lambda_water 0.5 \
     --time_mode both \
     --adaptation_strategy projection \
     --project TIR_sisr \
-    --run_name 04_film_both \
+    --run_name 06_film_both \
     --group model_dev_v3
 
 # python -m scripts.training.train \
