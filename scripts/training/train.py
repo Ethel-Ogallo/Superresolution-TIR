@@ -30,7 +30,7 @@ PATCHES_DIR = BASE / "data/processed/patches"
 STATS_PATH  = PATCHES_DIR / "stats.json"
 PRETRAINED  = BASE / "data/pretrained"
 CONFIGS_DIR = BASE / "configs"
-CKPT_DIR    = BASE / "checkpoints/dev_v5"
+CKPT_DIR    = BASE / "checkpoints/dev_v2"
 CKPT_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -74,6 +74,7 @@ def build_model(model_name, cfg, stats, args, aux_chans=None):
         input_init=args.input_init,
         lambda_grad=args.lambda_grad,
         lambda_water=args.lambda_water,
+        water_weight=args.water_weight,
         hr_mean=stats["hr"]["mean"],
         hr_std=stats["hr"]["std"],
         data_range=stats["hr_data_range"],
@@ -238,9 +239,11 @@ def parse_args():
     p.add_argument("--adaptation_strategy", type=str, default="projection", choices=["projection", "direct", "fusion"])  
     p.add_argument("--lambda_grad", type=float, default=0.0)   
     p.add_argument("--lambda_water", type=float, default=0.0)
+    p.add_argument("--water_weight", type=float, default=2.0)
     p.add_argument("--freeze_backbone", type=int, default=0)
     p.add_argument("--freeze_mode",type=str,default="none",choices=["none", "body", "body+first"])
-    p.add_argument("--input_init",type=str,default="pretrained_mean",choices=["pretrained_mean","gaussian","xavier","he"])
+    p.add_argument("--input_init",type=str,default="pretrained_mean",
+                   choices=["pretrained_mean","gaussian","xavier","he", "partial_preserve"])
 
     return p.parse_args()
 

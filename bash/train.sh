@@ -1,8 +1,8 @@
-# #!/bin/bash -l
-# #SBATCH --job-name=sisr
-# #SBATCH --gres=gpu:1
-# #SBATCH --cpus-per-task=6
-# #SBATCH --mem=32G
+#!/bin/bash -l
+#SBATCH --job-name=sisr
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=6
+#SBATCH --mem=32G
 # #SBATCH --output=logs/01_fusion_aux_%j.log
 # #SBATCH --output=logs/dir_aux_%j.log
 
@@ -15,7 +15,7 @@ conda activate sisr
 
 # -------- Project root (all relative paths resolve from here) --------
 cd /share/castor/home/e2406751/Superresolution-TIR
-mkdir -p logs checkpoints/dev_v5
+mkdir -p logs checkpoints/dev_v3
 
 python -m scripts.training.train \
     --model swinir \
@@ -27,13 +27,16 @@ python -m scripts.training.train \
     --use_aux 1 \
     --lambda_grad 0.0 \
     --lambda_water 0.0 \
+    --water_weight 0.0 \
     --adaptation_strategy direct \
-    --input_init pretrained_mean \
+    --input_init he \
     --freeze_backbone 0 \
     --project TIR_sisr \
-    --run_name exp_01 \
-    --group init_experiments
+    --run_name 1.3_direct \
+    --group fixed-aux_dev
 
+
+# input_init options:pretrained_mean,gaussian,xavier,he, partial_preserve
 
 # # no freezing
 # --freeze_backbone 0

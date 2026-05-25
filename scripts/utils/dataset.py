@@ -17,7 +17,6 @@ class SRDataset(Dataset):
         repeat_channels=False,   # keep for baseline compatibility
         use_aux=False, 
         aux_dir=None,
-
         transform=None,
     ):
 

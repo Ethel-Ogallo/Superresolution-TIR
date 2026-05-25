@@ -153,6 +153,8 @@ def shared_step(module, batch, stage: str):
         water_mask=water_mask,
         lambda_grad=module.lambda_grad,
         lambda_water=module.lambda_water,
+        water_weight=module.water_weight,  
+        land_weight=1.0,
     )
 
     module.log(f"{stage}_loss",loss,on_step=(stage == "train"), on_epoch=True,prog_bar=True)

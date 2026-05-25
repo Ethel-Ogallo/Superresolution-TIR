@@ -3,33 +3,65 @@ from datetime import datetime, timedelta
 import os
 import time
 
+# --------------------------------------------------
 # CONFIG
-os.chdir("/share/home/e2406751/Superresolution-TIR")
+# --------------------------------------------------
+os.chdir("/home/ogallo/Documents/CDE/MSC_thesis/Superresolution-TIR")
 
-OUT_DIR = "data/AUX/auxiliary"
+OUT_DIR = "TIR_data/auxiliary"
 os.makedirs(OUT_DIR, exist_ok=True)
 
 sites = [
-    {"name": "BAS_2025","bbox": [4.6235292131943595,44.20341474159712,4.8087985220913465,44.77149984473723],"date": "2025-07-22"},
-    {"name": "BRC_2022","bbox": [5.537033405913344,45.60791424652272,5.66930433527257,45.70340982406573],"date": "2022-07-20"},
-    {"name": "BRC_2023","bbox": [5.532976680440144,45.60829001750337,5.667723843425785,45.716136240747225],"date": "2023-07-17"},
-    {"name": "DZM_2013","bbox": [4.635043627068157,44.14319994073103,4.7345843918671,44.47091486635755],"date": "2013-07-25"},
-    {"name": "DZM_2014","bbox": [4.63786602478749,44.206803726831424,4.714878331501317,44.44676111126777],"date": "2014-06-22"},
-    {"name": "DZM_2019","bbox": [4.6432161083050945,44.29534194032175,4.6988318347868505,44.44609235611887],"date": "2019-06-26"},
-    {"name": "DZM_2023","bbox": [4.639897560179281,44.21104258477187,4.711294490724891,44.54933234676181],"date": "2023-07-12"},
-    {"name": "HAUT_2025","bbox": [5.4079769335788015,45.590820615153746,5.859889397217935,45.991607534748766],"date": "2025-07-01"},
-    {"name": "PDR_2013","bbox": [4.732594410555663,45.27292940345975,4.8221466801989585,45.41493723542345],"date": "2013-07-16"},
-    {"name": "PDR_2014","bbox": [4.733757337013955,45.27114213632399,4.819312653772652,45.414425093195234],"date": "2014-07-16"},
-    {"name": "PDR_2023","bbox": [4.735005672204379,45.28372290653185,4.883105433567413,45.71579997560222],"date": "2023-07-18"},
+    {"name": "BAS_2025","bbox": [4.6235,44.2034,4.8088,44.7715],"date": "2025-07-22"},
+    {"name": "BRC_2022","bbox": [5.5370,45.6079,5.6693,45.7161],"date": "2022-07-20"},
+    {"name": "BRC_2023","bbox": [5.5330,45.6079,5.6677,45.7161],"date": "2023-07-17"},
+    {"name": "DZM_2013","bbox": [4.6350,44.1432,4.7346,44.4709],"date": "2013-07-25"},
+    {"name": "DZM_2014","bbox": [4.6378,44.2068,4.7148,44.4467],"date": "2014-06-22"},
+    {"name": "DZM_2019","bbox": [4.6432,44.2953,4.6988,44.4460],"date": "2019-06-26"},
+    {"name": "DZM_2023","bbox": [4.6399,44.2110,4.7113,44.5493],"date": "2023-07-12"},
+    {"name": "HAUT_2025","bbox": [5.4079,45.5908,5.8598,45.9916],"date": "2025-07-01"},
+    {"name": "PDR_2013","bbox": [4.7325,45.2729,4.8221,45.4149],"date": "2013-07-16"},
+    {"name": "PDR_2014","bbox": [4.7337,45.2711,4.8193,45.4144],"date": "2014-07-16"},
+    {"name": "PDR_2023","bbox": [4.7350,45.2837,4.8831,45.7157],"date": "2023-07-18"},
 ]
 
+# --------------------------------------------------
 # CONNECT
+# --------------------------------------------------
 conn = openeo.connect(
     "https://openeo.dataspace.copernicus.eu"
 ).authenticate_oidc()
 
-# AUX CUBE
-def build_aux_cube(conn, bbox, start, end):
+# --------------------------------------------------
+# SENSOR ROUTER
+# --------------------------------------------------
+def get_sensor(year):
+    return "LANDSAT" if year <= 2014 else "SENTINEL"
+
+# --------------------------------------------------
+# SAFE COLLECTION LOADER
+# --------------------------------------------------
+def load_landsat(conn, spatial_extent, start, end):
+    return conn.load_collection(
+        "LANDSAT_BIMONTHLY_MOSAIC",
+        spatial_extent=spatial_extent,
+        temporal_extent=[start, end],
+        bands=["B02","B03","B04","B06","B07"]
+    )
+
+def load_sentinel(conn, spatial_extent, start, end):
+    return conn.load_collection(
+        "SENTINEL2_L2A",
+        spatial_extent=spatial_extent,
+        temporal_extent=[start, end],
+        bands=["B02","B03","B04","B08","B11"],
+        max_cloud_cover=15
+    )
+
+# --------------------------------------------------
+# AUX BUILDER
+# --------------------------------------------------
+def build_aux_cube(conn, bbox, start, end, sensor):
 
     spatial_extent = {
         "west": bbox[0],
@@ -38,27 +70,26 @@ def build_aux_cube(conn, bbox, start, end):
         "north": bbox[3]
     }
 
-    # SENTINEL-2
-    s2 = conn.load_collection(
-        "SENTINEL2_L2A",
-        spatial_extent=spatial_extent,
-        temporal_extent=[start, end],
-        bands=["B02", "B03", "B04", "B05", "B08", "B11"],
-        max_cloud_cover=15
-    )
+    if sensor == "SENTINEL":
+        cube = load_sentinel(conn, spatial_extent, start, end)
+    else:
+        cube = load_landsat(conn, spatial_extent, start, end)
 
-    # Temporal median composite
-    s2 = s2.reduce_dimension(dimension="t", reducer="median")
+    cube = cube.reduce_dimension("t", "median")
 
-    # RAW BANDS
-    b02 = s2.band("B02")
-    b03 = s2.band("B03")
-    b04 = s2.band("B04")
-    b05 = s2.band("B05")
-    b08 = s2.band("B08")
-    b11 = s2.band("B11")
+    # spectral bands mapping
+    b02 = cube.band("B02")
+    b03 = cube.band("B03")
+    b04 = cube.band("B04")
 
-    # SPECTRAL INDICES
+    if sensor == "SENTINEL":
+        b08 = cube.band("B08")   # NIR
+        b11 = cube.band("B11")   # SWIR
+    else:
+        b08 = cube.band("B06")   # SWIR1 (proxy for NIR/SWIR mismatch handling)
+        b11 = cube.band("B07")   # SWIR2
+
+    # indices
     ndvi = (b08 - b04) / (b08 + b04)
     ndwi = (b03 - b08) / (b03 + b08)
     ndmi = (b08 - b11) / (b08 + b11)
@@ -72,24 +103,16 @@ def build_aux_cube(conn, bbox, start, end):
         "ESA_WORLDCOVER_10M_2021_V2",
         spatial_extent=spatial_extent,
         bands=["MAP"]
-    )
-
-    lulc = lulc.rename_labels("bands", ["LULC"])
+    ).rename_labels("bands", ["LULC"])
 
     # DEM
     dem = conn.load_collection(
         "COPERNICUS_30",
         spatial_extent=spatial_extent
-    )
+    ).reduce_dimension("t", "mean")
 
-    dem = dem.reduce_dimension(
-        dimension="t",
-        reducer="mean"
-    )
-
-    # MERGE
-    aux_cube = (
-        s2
+    return (
+        cube
         .merge_cubes(ndvi)
         .merge_cubes(ndwi)
         .merge_cubes(ndmi)
@@ -97,38 +120,33 @@ def build_aux_cube(conn, bbox, start, end):
         .merge_cubes(dem)
     )
 
-    return aux_cube
-
-
+# --------------------------------------------------
 # SUBMIT JOBS
+# --------------------------------------------------
 jobs = {}
 
 for s in sites:
 
     name = s["name"]
-
-    out_path = os.path.join(OUT_DIR, f"{name}_aux.tif")
-
-    if os.path.exists(out_path) and os.path.getsize(out_path) > 50 * 1024 * 1024:
-        print(f"[SKIP] {name} already exists")
-        continue
-
     date = datetime.strptime(s["date"], "%Y-%m-%d")
 
     start = (date - timedelta(days=20)).strftime("%Y-%m-%d")
     end   = (date + timedelta(days=20)).strftime("%Y-%m-%d")
 
-    print(f"[BUILD] {name} | window: {start} → {end}")
+    sensor = get_sensor(date.year)
 
-    cube = build_aux_cube(
-        conn,
-        s["bbox"],
-        start,
-        end
-    )
+    out_path = os.path.join(OUT_DIR, f"{name}_aux.tif")
+
+    if os.path.exists(out_path):
+        print(f"[SKIP] {name}")
+        continue
+
+    print(f"[BUILD] {name} → {sensor}")
+
+    cube = build_aux_cube(conn, s["bbox"], start, end, sensor)
 
     job = cube.create_job(
-        title=f"{name}_AUX_STACK",
+        title=f"{name}_AUX",
         out_format="GTiff",
         job_options={"crs": "EPSG:2154"}
     )
@@ -136,25 +154,18 @@ for s in sites:
     job.start_job()
 
     jobs[name] = job.job_id
+    print(f"[SUBMITTED] {name}")
 
-    print(f"[SUBMITTED] {name} → {job.job_id}")
-
-
+# --------------------------------------------------
 # POLLING
+# --------------------------------------------------
 print("\nWaiting for jobs...\n")
 
 while True:
 
-    statuses = {}
+    statuses = {n: conn.job(j).status() for n, j in jobs.items()}
 
-    for name, job_id in jobs.items():
-        job = conn.job(job_id)
-        statuses[name] = job.status()
-
-    print(
-        " | ".join([f"{k}: {v}" for k, v in statuses.items()]),
-        end="\r"
-    )
+    print(" | ".join([f"{k}: {v}" for k, v in statuses.items()]), end="\r")
 
     if all(v in ["finished", "error", "canceled"] for v in statuses.values()):
         break
@@ -163,58 +174,65 @@ while True:
 
 print("\nAll jobs finished.")
 
-# DOWNLOAD
+# --------------------------------------------------
+# DOWNLOAD (SAFE FIXED)
+# --------------------------------------------------
 for name, job_id in jobs.items():
-
-    out_path = os.path.join(OUT_DIR, f"{name}_aux.tif")
-
-    if os.path.exists(out_path) and os.path.getsize(out_path) > 50 * 1024 * 1024:
-        print(f"[SKIP DOWNLOAD] {name}")
-        continue
 
     job = conn.job(job_id)
 
-    assets = job.get_results().get_metadata()["assets"]
+    if job.status() != "finished":
+        print(f"[SKIP] {name} → {job.status()}")
+        continue
+
+    out_path = os.path.join(OUT_DIR, f"{name}_aux.tif")
+
+    try:
+        meta = job.get_results().get_metadata()
+        assets = meta.get("assets", {})
+
+        print(f"\n{name} assets:")
+        for k, v in assets.items():
+            print(" ", k, "→", v)
+
+    except Exception as e:
+        print(f"[ERROR] metadata {name}: {e}")
+        continue
 
     tif_url = None
-    for k, v in assets.items():
-        if k.endswith(".tif"):
-            tif_url = v["href"]
+
+    for asset in assets.values():
+        href = asset.get("href", "")
+        if "tif" in href.lower():
+            tif_url = href
             break
 
-    if tif_url is None:
-        print(f"[ERROR] No TIFF for {name}")
+    if not tif_url:
+        print(f"[ERROR] No GeoTIFF found for {name}")
         continue
 
     print(f"[DOWNLOAD] {name}")
 
-    response = conn.session.get(tif_url, stream=True, timeout=300)
-    response.raise_for_status()
+    r = conn.session.get(tif_url, stream=True)
+    r.raise_for_status()
 
     with open(out_path, "wb") as f:
-        for chunk in response.iter_content(chunk_size=8 * 1024 * 1024):
+        for chunk in r.iter_content(8 * 1024 * 1024):
             if chunk:
                 f.write(chunk)
 
-    size_mb = os.path.getsize(out_path) / (1024 * 1024)
-    print(f"[DONE] {name} → {size_mb:.1f} MB")
+    print(f"[DONE] {name}")
 
 
-# AUX CHANNEL ORDER 
-AUX_CHANNELS = [
-    "B02",
-    "B03",
-    "B04",
-    "B05",
-    "B08",
-    "B11",
-    "NDVI",
-    "NDWI",
-    "NDMI",
-    "LULC",
-    "DEM"
-]
-
-print("\nAUX CHANNELS:")
-for i, ch in enumerate(AUX_CHANNELS):
-    print(f"{i:02d}: {ch}")
+# | Index | Channel              | Meaning                           |
+# | ----- | -------------------- | --------------------------------- |
+# | 0     | B02                  | Blue                              |
+# | 1     | B03                  | Green                             |
+# | 2     | B04                  | Red                               |
+# | 3     | B08                  | NIR (S2) / SWIR1 (Landsat proxy)  |
+# | 4     | B11                  | SWIR (S2) / SWIR2 (Landsat proxy) |
+# | 5     | NDVI                 | vegetation index                  |
+# | 6     | NDWI                 | water index                       |
+# | 7     | NDMI                 | moisture index                    |
+# | 8     | LULC (one-hot stack) | land cover                        |
+# | 9     | DEM                  | elevation                         |

@@ -10,7 +10,7 @@ import torch.nn.functional as F
 
 # --------------- AUX PROJECTION ------------------
 class AuxProjection(nn.Module):
-    def __init__(self, aux_chans=20, out_chans=3):
+    def __init__(self, aux_chans=19, out_chans=3):
         super().__init__()
 
         in_chans = 1 + aux_chans
@@ -79,7 +79,12 @@ class SwinIRModule(pl.LightningModule):
         self.aux_chans = aux_chans
         self.freeze_backbone = freeze_backbone
         self.freeze_mode = freeze_mode
-        self.input_init = input_init
+
+        # only keep input_init for direct strategy
+        self.input_init = (
+            input_init if adaptation_strategy == "direct"
+            else None
+        )
 
         self.lambda_grad = lambda_grad
         self.lambda_water = lambda_water
@@ -206,6 +211,12 @@ class SwinIRModule(pl.LightningModule):
     #     print(f"[INFO] conv_first expanded 3 - {in_chans} (REPEAT INIT)")
 
     def _expand_direct_input_layer(self):
+        
+        if self.strategy != "direct":
+            return
+
+        if self.input_init is None:
+            raise ValueError("input_init must be set for direct strategy")
 
         old = self.body.conv_first
         in_chans = 1 + self.aux_chans
@@ -244,11 +255,21 @@ class SwinIRModule(pl.LightningModule):
             elif self.input_init == "he":
                 nn.init.kaiming_normal_(new.weight, mode="fan_out", nonlinearity="relu")
 
+            elif self.input_init == "partial_preserve":
+                # TIR channel: strong pretrained prior
+                tir_init = old.weight.mean(dim=1, keepdim=True)
+                new.weight[:, 0:1] = tir_init
+                # AUX channels: weakly structured init (NOT identical copies)
+                aux_init = old.weight.mean(dim=1, keepdim=True)
+                noise = torch.randn_like(new.weight[:, 1:]) * 0.01
+                new.weight[:, 1:] = aux_init + noise
+
             else:
                 raise ValueError(f"Unknown input_init: {self.input_init}")
 
             if old.bias is not None:
                 new.bias.copy_(old.bias)
+
 
         self.body.conv_first = new
 
