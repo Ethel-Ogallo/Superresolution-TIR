@@ -117,8 +117,11 @@ def shared_step(module, batch, stage: str):
     sr_img = module(batch)
 
     # denormalize
-    sr = module.denormalize(sr_img[:, 0:1])
-    hr = module.denormalize(hr[:, 0:1])
+    # sr = module.denormalize(sr_img[:, 0:1])
+    # hr = module.denormalize(hr[:, 0:1])
+    # shared_step
+    sr = module.denormalize(sr_img[:, 0:1], module.hr_mean, module.hr_std)
+    hr = module.denormalize(hr[:, 0:1],     module.hr_mean, module.hr_std)
 
     # -------------------
     # losses

@@ -41,9 +41,8 @@ cd /share/castor/home/e2406751/Superresolution-TIR
 
 python -m scripts.evaluation.eval \
   --model swinir \
-  --checkpoint checkpoints/dev_v2/swinir/best-epoch=68-val_full_psnr=18.0997.ckpt \
+  --checkpoint checkpoints/dev_v2/swinir/best-epoch=26-val_full_psnr=17.7527-v1.ckpt \
   --use_aux 1 \
-  --adaptation_strategy fusion \
   --project TIR_sisr \
-  --run_name 01_fusion_eval \
+  --run_name 05_dir_eval \
   --group model_dev_v2 \

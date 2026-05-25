@@ -64,8 +64,33 @@ def test_strategies():
             }
 
             model.eval()
+
             with torch.no_grad():
-                output = model(batch)
+
+                if strategy == "direct":
+
+                    lr = batch["lr"]
+                    aux = batch["aux"]
+                    x = torch.cat([lr, aux], dim=1)
+
+                    print(f"   Input to SwinIR : {x.shape}")
+
+                    body_out = model.body(x)
+
+                    print(f"   Body output     : {body_out.shape}")
+
+                    if model.direct_out is not None:
+                        final_out = model.direct_out(body_out)
+                        print(f"   After head      : {final_out.shape}")
+                    else:
+                        final_out = body_out
+
+                    output = final_out
+
+                else:
+                    output = model(batch)
+
+            print(f"   Final output    : {output.shape}")
 
             print(f"   Output shape : {output.shape}")
             print(f"   ✅ {strategy} passed\n")
