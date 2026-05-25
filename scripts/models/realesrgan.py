@@ -213,7 +213,7 @@ class RealESRGANModule(pl.LightningModule):
                 opt, mode="max", factor=0.5, patience=5
             )
             return {"optimizer": opt,
-                    "lr_scheduler": {"scheduler": sch, "monitor": "val_psnr"}}
+                    "lr_scheduler": {"scheduler": sch, "monitor": "val_full_psnr"}}
 
         # Phase 2 — two optimisers for GAN
         opt_g = optim.Adam(
@@ -233,7 +233,7 @@ class RealESRGANModule(pl.LightningModule):
         )
         return (
             [opt_g, opt_d],
-            [{"scheduler": sch_g, "monitor": "val_psnr"}],
+            [{"scheduler": sch_g, "monitor": "val_full_psnr"}],
         )
 
     # Pretrained loading

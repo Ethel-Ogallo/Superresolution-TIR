@@ -87,7 +87,7 @@ class SwinIRModule(pl.LightningModule):
             opt, mode="max", factor=0.5, patience=5
         )
         return {"optimizer": opt,
-                "lr_scheduler": {"scheduler": sch, "monitor": "val_psnr"}}
+                "lr_scheduler": {"scheduler": sch, "monitor": "val_full_psnr"}}
 
     def _load_pretrained(self, path):
         if not os.path.exists(path):

@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --job-name=sisr_train_phase2
+#SBATCH --job-name=sisr
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-gpu=6
 #SBATCH --mem=32G
@@ -18,15 +18,15 @@ cd /share/castor/home/e2406751/Superresolution-TIR
 mkdir -p logs checkpoints/phase2
 
 python -m scripts.training.train \
-    --model resshift \
+    --model realesrgan \
     --lr 1e-4 \
-    --batch_size 1 \
+    --batch_size 2 \
     --max_epochs 100 \
-    --patience 10 \
+    --patience 20 \
     --num_workers 4 \
     --project TIR_sisr \
-    --run_name resshift_ph2 \
-    --group benchmark_phase2
+    --run_name ft_realesrgan\
+    --group benchmark
 
 # SWINIR
 # python -m scripts.training.train \

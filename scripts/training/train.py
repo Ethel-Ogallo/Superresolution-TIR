@@ -154,6 +154,7 @@ def run(args):
         stats_path=STATS_PATH,
         repeat_channels=True,
         transform=None,          # augmentations added in Phase 2 model dev
+        use_water_mask=True,    # needed for masked_water loss in Phase 2 model dev
     )
     val_ds = SRDataset(
         split="val",
@@ -161,6 +162,7 @@ def run(args):
         stats_path=STATS_PATH,
         repeat_channels=True,
         transform=None,
+        use_water_mask=True,    # needed for masked_water loss in Phase 2 model dev
     )
 
     loader_kw    = dict(num_workers=args.num_workers, pin_memory=True)
@@ -187,8 +189,8 @@ def run(args):
     #  Callbacks 
     ckpt_callback = ModelCheckpoint(
         dirpath   = CKPT_DIR / args.model,
-        filename  = f"{args.model}_phase2_{{epoch:02d}}_{{val_psnr:.4f}}",
-        monitor   = "val_psnr",
+        filename  = f"{args.model}_phase2_{{epoch:02d}}_{{val_full_psnr:.4f}}",
+        monitor   = "val_full_psnr",
         mode      = "max",
         save_top_k= 1,
         verbose   = True,
@@ -197,7 +199,7 @@ def run(args):
     callbacks = [
         ckpt_callback,
         EarlyStopping(
-            monitor  = "val_psnr",
+            monitor  = "val_full_psnr",
             mode     = "max",
             patience = args.patience,
             verbose  = True,
@@ -224,7 +226,7 @@ def run(args):
     trainer.fit(model, train_loader, val_loader)
 
     print(f"\n[INFO] Best checkpoint: {ckpt_callback.best_model_path}")
-    print(f"[INFO] Best val_psnr:   {ckpt_callback.best_model_score:.4f}")
+    print(f"[INFO] Best val_full_psnr:   {ckpt_callback.best_model_score:.4f}")
 
     wandb.finish()
 

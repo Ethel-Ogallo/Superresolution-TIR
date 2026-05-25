@@ -1,7 +1,7 @@
 #!/bin/bash -l
 # eval.sh — Phase 1 zero-shot inference for all models
 
-#SBATCH --job-name=sisr_eval_phase1
+#SBATCH --job-name=sisr
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-gpu=6
 #SBATCH --mem=32G
@@ -24,21 +24,21 @@ cd /share/castor/home/e2406751/Superresolution-TIR
 #     --phase 1
 
 # phase 1
-# python -m scripts.evaluation.eval \
-#     --model resshift \
-#     --phase 1 \
-#     --use_water_metrics \
-#     --run_name "04_resshift_p1" \
-#     --group benchmark_phase1
+python -m scripts.evaluation.eval \
+    --model realesrgan \
+    --phase 1 \
+    --use_water_metrics \
+    --run_name "pt_realesrgan" \
+    --group benchmark
 
 # phase 2
-python -m scripts.evaluation.eval \
-    --model edsr \
-    --phase 2 \
-    --use_water_metrics \
-    --run_name "03_edsr_eval" \
-    --group benchmark_phase2 \
-    --checkpoint checkpoints/phase2/edsr/edsr_phase2_epoch=69_val_psnr=20.9760.ckpt
+# python -m scripts.evaluation.eval \
+#     --model edsr \
+#     --phase 2 \
+#     --use_water_metrics \
+#     --run_name "03_edsr_eval" \
+#     --group benchmark_phase2 \
+#     --checkpoint checkpoints/phase2/edsr/edsr_phase2_epoch=69_val_psnr=20.9760.ckpt
 
 # checkpoints/phase2/edsr/edsr_phase2_epoch=69_val_psnr=20.9760.ckpt
 # checkpoints/phase2/hat/hat_phase2_epoch=16_val_psnr=21.2140.ckpt

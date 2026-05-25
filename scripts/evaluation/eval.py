@@ -88,18 +88,18 @@ def build_model(model_name, phase, checkpoint=None):
             **sr_common
         )
 
-    elif model_name == "resshift":
-        from scripts.models.resshift import ResShiftModule
+    # elif model_name == "resshift":
+    #     from scripts.models.resshift import ResShiftModule
 
-        if checkpoint:
-            return ResShiftModule.load_from_checkpoint(checkpoint)
+    #     if checkpoint:
+    #         return ResShiftModule.load_from_checkpoint(checkpoint)
 
-        return ResShiftModule(
-            pretrained_path=str(PRETRAINED / "ResShift_x4.pth"),
-            ae_path=str(PRETRAINED / "autoencoder_vq_f4.pth"),
-            hr_mean=HR_MEAN,
-            hr_std=HR_STD,
-        )
+    #     return ResShiftModule(
+    #         pretrained_path=str(PRETRAINED / "ResShift_x4.pth"),
+    #         ae_path=str(PRETRAINED / "autoencoder_vq_f4.pth"),
+    #         hr_mean=HR_MEAN,
+    #         hr_std=HR_STD,
+    #     )
 
     raise ValueError(f"Unknown model: {model_name}")
 
@@ -116,8 +116,8 @@ def run_inference(model_name, phase, checkpoint=None, use_water_metrics=False, g
     from lightning.pytorch.loggers import WandbLogger
     from scripts.utils.dataset import SRDataset
 
-    test_ds = SRDataset(
-        split="test",
+    val_ds = SRDataset(
+        split="val",
         patches_dir=PATCHES_DIR,
         stats_path=STATS_PATH,
         use_water_mask=use_water_metrics,
@@ -125,7 +125,7 @@ def run_inference(model_name, phase, checkpoint=None, use_water_metrics=False, g
         transform=None,
     )
 
-    test_loader = DataLoader(test_ds, batch_size=4, shuffle=False)
+    val_loader = DataLoader(val_ds, batch_size=4, shuffle=False)
 
     model = build_model(model_name, phase, checkpoint)
 
@@ -144,7 +144,7 @@ def run_inference(model_name, phase, checkpoint=None, use_water_metrics=False, g
         enable_checkpointing=False
     )
 
-    results = trainer.test(model, dataloaders=test_loader)
+    results = trainer.test(model, dataloaders=val_loader)
 
     if results:
         metrics = results[0]
@@ -163,7 +163,7 @@ def run_inference(model_name, phase, checkpoint=None, use_water_metrics=False, g
 
 
 def run_all(phase, checkpoint_dir=None):
-    models      = ["edsr", "swinir", "hat", "realesrgan", "resshift"]
+    models      = ["edsr", "swinir", "hat", "realesrgan"]
     all_results = {}
 
     for model_name in models:
@@ -209,7 +209,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--model", type=str,
-                        choices=["edsr","swinir","hat","realesrgan","resshift"])
+                        choices=["edsr","swinir","hat","realesrgan"])
     parser.add_argument("--phase", type=int, default=1, choices=[1,2])
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--all", action="store_true")
