@@ -30,7 +30,7 @@ PATCHES_DIR = BASE / "data/processed/patches"
 STATS_PATH  = PATCHES_DIR / "stats.json"
 PRETRAINED  = BASE / "data/pretrained"
 CONFIGS_DIR = BASE / "configs"
-CKPT_DIR    = BASE / "checkpoints/dev_v2"
+CKPT_DIR    = BASE / "checkpoints/dev_v3"
 CKPT_DIR.mkdir(parents=True, exist_ok=True)
 
 

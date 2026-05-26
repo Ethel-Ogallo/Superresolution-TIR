@@ -8,7 +8,8 @@ import lightning.pytorch as pl
 from basicsr.archs import rrdbnet_arch, discriminator_arch
 from basicsr.losses.gan_loss import GANLoss
 from basicsr.losses.basic_loss import PerceptualLoss
-from scripts.utils.metrics import shared_step
+
+from scripts.utils.metrics import shared_step, compute_metrics
 from scripts.utils.loss import masked_l1
 
 
@@ -31,7 +32,7 @@ class AuxProjection(nn.Module):
         return self.proj(torch.cat([tir, aux], dim=1))
 
 
-#  RealESRGAN module
+# RealESRGAN module
 class RealESRGANModule(pl.LightningModule):
 
     def __init__(
@@ -48,22 +49,37 @@ class RealESRGANModule(pl.LightningModule):
         data_min: float           = None,
         lambda_perceptual: float  = 1.0,
         lambda_adversarial: float = 0.1,
+        lambda_grad: float        = 0.0,
+        lambda_water: float       = 0.0,
+        water_weight: float       = 1.0,
         adaptation_strategy: str  = "projection",
         aux_chans: int            = None,
-        direct_init_mode: str     = "mean",
+        input_init: str           = "pretrained_mean",  # consistent with SwinIR naming
+        freeze_backbone: bool     = True,               # default True for stability
+        phase: int                = 2,
+        **kwargs,
     ):
         super().__init__()
         self.save_hyperparameters()
 
-        self.DATA_RANGE = float(data_range)
-        self.DATA_MIN   = float(data_min) if data_min is not None else 0.0
-        self.strategy   = adaptation_strategy
-        self.aux_chans  = aux_chans
+        self.DATA_RANGE     = float(data_range)
+        self.DATA_MIN       = float(data_min) if data_min is not None else 0.0
+        self.strategy       = adaptation_strategy
+        self.aux_chans      = aux_chans
+        self.lambda_grad    = lambda_grad
+        self.lambda_water   = lambda_water
+        self.water_weight   = water_weight
+        self.hr_mean        = hr_mean
+        self.hr_std         = hr_std
+        self.freeze_backbone = freeze_backbone
+
+        # only relevant for direct strategy
+        self.input_init = input_init if adaptation_strategy == "direct" else None
 
         if aux_chans is None:
             raise ValueError("aux_chans must be provided")
 
-        # generator 
+        # ---------------- generator --------------------------
         body_in_chans = (1 + aux_chans) if adaptation_strategy == "direct" else 3
 
         self.net_g = rrdbnet_arch.RRDBNet(
@@ -75,22 +91,24 @@ class RealESRGANModule(pl.LightningModule):
             scale=4,
         )
 
-        # strategy heads 
+        # ---------------- strategy heads --------------------------
         self.proj = None
 
         if adaptation_strategy == "projection":
             self.proj = AuxProjection(aux_chans=aux_chans, out_chans=3)
+
         elif adaptation_strategy == "direct":
-            self._expand_direct_input_layer(init_mode=direct_init_mode)
+            # expand BEFORE loading pretrained so shape matches
+            self._expand_direct_input_layer()
 
         # load pretrained generator 
         if pretrained_path:
             self._load_pretrained_g(pretrained_path)
 
-        # output head: 3ch → 1ch
+        # output head: 3ch → 1ch 
         self.out_head = nn.Conv2d(3, 1, 1)
 
-        # discriminator
+        # ---------------- discriminator --------------------------
         self.automatic_optimization = False
 
         self.net_d = discriminator_arch.UNetDiscriminatorSN(
@@ -104,6 +122,7 @@ class RealESRGANModule(pl.LightningModule):
         else:
             print("[INFO] Discriminator — no pretrained path, random init")
 
+        # ----------- losses -----------------
         self.gan_loss = GANLoss(
             gan_type="vanilla",
             real_label_val=1.0,
@@ -134,15 +153,17 @@ class RealESRGANModule(pl.LightningModule):
 
         self._print_setup()
 
+    # setup print 
     def _print_setup(self):
         print("\n================ REALESRGAN SETUP ================")
         print(f"Strategy        : {self.strategy}")
         print(f"Aux channels    : {self.aux_chans}")
-        print(f"Direct init mode: {self.hparams.direct_init_mode}")
+        print(f"Input init      : {self.input_init}")
+        print(f"Freeze backbone : {self.freeze_backbone}")
         print("==================================================\n")
 
-    # input layer expansion 
-    def _expand_direct_input_layer(self, init_mode="mean"):
+    # direct input layer expansion 
+    def _expand_direct_input_layer(self):
         old      = self.net_g.conv_first
         in_chans = 1 + self.aux_chans
 
@@ -156,44 +177,62 @@ class RealESRGANModule(pl.LightningModule):
         )
 
         with torch.no_grad():
-            # Different initialization strategies for new input channels
-            # PRETRAINED MEAN + REPEAT
-            if self.init_mode == "pretrained_mean":
+            if self.input_init == "pretrained_mean":
+                avg = old.weight.mean(dim=1, keepdim=True)
+                new.weight[:] = avg.repeat(1, in_chans, 1, 1)
 
-                avg = old.weight.mean(dim=1,keepdim=True)
-                new.weight[:] = avg.repeat(1,in_chans,1,1)
+            elif self.input_init == "gaussian":
+                nn.init.normal_(new.weight, mean=0.0, std=0.02)
 
-            # GAUSSIAN
-            elif self.init_mode == "gaussian":
-
-                nn.init.normal_(
-                    new.weight,
-                    mean=0.0,
-                    std=0.02
-                )
-
-            # XAVIER
-            elif self.init_mode == "xavier":
+            elif self.input_init == "xavier":
                 nn.init.xavier_uniform_(new.weight)
 
-            # HE / KAIMING
-            elif self.init_mode == "he":
+            elif self.input_init == "he":
                 nn.init.kaiming_normal_(new.weight, mode="fan_out", nonlinearity="relu")
 
+            elif self.input_init == "partial_preserve":
+                tir_init = old.weight.mean(dim=1, keepdim=True)
+                new.weight[:, 0:1] = tir_init
+                aux_init = old.weight.mean(dim=1, keepdim=True)
+                noise = torch.randn_like(new.weight[:, 1:]) * 0.01
+                new.weight[:, 1:] = aux_init + noise
+
             else:
-                raise ValueError(f"Unknown init_mode: {self.init_mode}")
+                raise ValueError(f"Unknown input_init: {self.input_init}")
 
             if old.bias is not None:
                 new.bias.copy_(old.bias)
 
         self.net_g.conv_first = new
+        print(f"[INFO] conv_first expanded 3 → {in_chans} ({self.input_init})")
 
-        print(
-            f"[INFO] conv_first expanded "
-            f"3 - {in_chans} "
-            f"({self.init_mode})")
+    # -------------- freezing ----------------
+    def _apply_freezing(self):
+        if not self.freeze_backbone:
+            return
 
-    # ── forward ──────────────────────────────────────────────────────────────
+        # freeze full generator backbone
+        for p in self.net_g.parameters():
+            p.requires_grad = False
+
+        # for direct strategy: unfreeze conv_first so new channels can learn
+        if self.strategy == "direct":
+            for p in self.net_g.conv_first.parameters():
+                p.requires_grad = True
+
+        # print("\n[INFO] FREEZING SUMMARY (generator)")
+        # for n, p in self.net_g.named_parameters():
+        #     print(f"  {n:50s} | {'TRAIN' if p.requires_grad else 'FROZEN'}")
+
+    # ------------------ denormalise -----------
+    def denormalize(self, t, mean=None, std=None):
+        if mean is None or std is None:
+            return t
+        mean = torch.tensor(mean, device=t.device, dtype=t.dtype)
+        std  = torch.tensor(std,  device=t.device, dtype=t.dtype)
+        return t * std + mean
+
+    # ---------------- forward ----------------
     def forward(self, batch):
         lr  = batch["lr"]
         aux = batch.get("aux", None)
@@ -202,36 +241,34 @@ class RealESRGANModule(pl.LightningModule):
             x = self.proj(lr, aux)
         elif self.strategy == "direct":
             x = torch.cat([lr, aux], dim=1)
+        else:
+            raise ValueError(f"Unknown strategy: {self.strategy}")
 
         out = self.net_g(x)
         return self.out_head(out)
 
-    # ── denormalise ──────────────────────────────────────────────────────────
-    def denormalize(self, t, mean=None, std=None):
-        if mean is None or std is None:
-            return t
-        mean = torch.tensor(mean, device=t.device, dtype=t.dtype)
-        std  = torch.tensor(std,  device=t.device, dtype=t.dtype)
-        return t * std + mean
-
-    # ── training step ────────────────────────────────────────────────────────
+    # ---------------- training step ----------------
     def training_step(self, batch, batch_idx):
-        hr_img  = batch["hr"]
-        hr_mask = batch["hr_mask"]
+        hr_img     = batch["hr"]
+        hr_mask    = batch["hr_mask"]
+        water_mask = batch.get("water_mask", None)  # ← fixed: was missing
+
+        if water_mask is not None:
+            water_mask = water_mask.to(hr_mask.device)
 
         opt_g, opt_d = self.optimizers()
 
         sr_img = self(batch)
-        sr     = self.denormalize(sr_img, self.hparams.hr_mean, self.hparams.hr_std)
-        hr     = self.denormalize(hr_img[:, 0:1], self.hparams.hr_mean, self.hparams.hr_std)
-        sr     = torch.nan_to_num(sr, nan=0.0)
-        hr     = torch.nan_to_num(hr, nan=0.0)
+        sr = self.denormalize(sr_img,          self.hparams.hr_mean, self.hparams.hr_std)
+        hr = self.denormalize(hr_img[:, 0:1],  self.hparams.hr_mean, self.hparams.hr_std)
+        sr = torch.nan_to_num(sr, nan=0.0)
+        hr = torch.nan_to_num(hr, nan=0.0)
 
         # repeat to 3ch for discriminator + perceptual loss
         sr_3ch = sr_img.repeat(1, 3, 1, 1)
         hr_3ch = hr_img[:, 0:1].repeat(1, 3, 1, 1)
 
-        # ── generator step ───────────────────────────────────────────────────
+        # ---------------- generator step ----------------
         self.toggle_optimizer(opt_g)
 
         recon_loss = masked_l1(sr, hr, hr_mask)
@@ -253,13 +290,13 @@ class RealESRGANModule(pl.LightningModule):
         opt_g.zero_grad()
         self.untoggle_optimizer(opt_g)
 
-        # ── discriminator step ───────────────────────────────────────────────
+        # ---------------- discriminator step ----------------
         self.toggle_optimizer(opt_d)
 
         pred_real   = self.net_d(hr_3ch)
-        loss_d_real = self.gan_loss(pred_real,           target_is_real=True,  is_disc=True)
+        loss_d_real = self.gan_loss(pred_real,          target_is_real=True,  is_disc=True)
         pred_fake_d = self.net_d(sr_3ch.detach())
-        loss_d_fake = self.gan_loss(pred_fake_d,         target_is_real=False, is_disc=True)
+        loss_d_fake = self.gan_loss(pred_fake_d,        target_is_real=False, is_disc=True)
         loss_d      = (loss_d_real + loss_d_fake) * 0.5
         loss_d      = torch.nan_to_num(loss_d, nan=0.0)
 
@@ -268,7 +305,7 @@ class RealESRGANModule(pl.LightningModule):
         opt_d.zero_grad()
         self.untoggle_optimizer(opt_d)
 
-        # ── logging ──────────────────────────────────────────────────────────
+        # ---------------- logging ----------------
         self.log("train_loss",        loss_g,      on_step=True,  on_epoch=True, prog_bar=True)
         self.log("train_loss_d",      loss_d,      on_step=True,  on_epoch=True, prog_bar=True)
         self.log("train_recon_loss",  recon_loss,  on_step=False, on_epoch=True)
@@ -276,8 +313,7 @@ class RealESRGANModule(pl.LightningModule):
         self.log("train_gan_loss_g",  gan_loss_g,  on_step=False, on_epoch=True)
 
         with torch.no_grad():
-            from scripts.utils.metrics import compute_metrics
-            compute_metrics(self, sr, hr, hr_mask, "train")
+            compute_metrics(self, sr, hr, hr_mask, "train", water_mask)  # ← fixed
 
         return loss_g
 
@@ -287,9 +323,14 @@ class RealESRGANModule(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         return shared_step(self, batch, "test")
 
-    # ── optimiser ────────────────────────────────────────────────────────────
+    # ---------------- optimiser ----------------
     def configure_optimizers(self):
-        g_params = list(self.net_g.parameters()) + list(self.out_head.parameters())
+        self._apply_freezing()
+
+        # generator params
+        g_params = [p for p in self.net_g.parameters() if p.requires_grad]
+        g_params += list(self.out_head.parameters())
+
         if self.proj is not None:
             g_params += list(self.proj.parameters())
 
@@ -313,7 +354,7 @@ class RealESRGANModule(pl.LightningModule):
             [{"scheduler": sch_g, "monitor": "val_full_psnr"}],
         )
 
-    # ── pretrained loading ───────────────────────────────────────────────────
+    # ---------------- pretrained loading ----------------
     def _load_pretrained_g(self, path):
         if not os.path.exists(path):
             print(f"[WARNING] Generator pretrained not found: {path}")
