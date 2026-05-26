@@ -17,40 +17,41 @@ conda activate sisr
 cd /share/castor/home/e2406751/Superresolution-TIR
 # mkdir -p logs checkpoints/dev_v3
 
-# python -m scripts.training.train \
-#     --model swinir \
-#     --lr 1e-4 \
-#     --batch_size 2 \
-#     --max_epochs 100 \
-#     --patience 30 \
-#     --num_workers 4 \
-#     --use_aux 1 \
-#     --lambda_grad 1.0 \
-#     --lambda_water 0.5 \
-#     --water_weight 2.0 \
-#     --adaptation_strategy direct \
-#     --input_init pretrained_mean \
-#     --freeze_backbone 0 \
-#     --project TIR_sisr \
-#     --run_name w+g2_direct \
-#     --group fixed-aux_dev
-
-# GAN training
-python -m scripts.training.train_gan \
+python -m scripts.training.train \
+    --model swinir \
     --lr 1e-4 \
     --batch_size 2 \
     --max_epochs 100 \
     --patience 30 \
     --num_workers 4 \
     --use_aux 1 \
-    --lambda_grad 0.0 \
-    --lambda_water 0.0 \
-    --water_weight 1.0 \
-    --adaptation_strategy projection \
+    --lambda_grad 1.0 \
+    --lambda_water 0.5 \
+    --water_weight 2.0 \
+    --adaptation_strategy direct \
     --input_init pretrained_mean \
-    --freeze_backbone 0 \
-    --run_name 02_proj_full \
-    --group GAN
+    --freeze_backbone 1 \
+    --freeze_mode body \
+    --project TIR_sisr \
+    --run_name full_freeze \
+    --group fixed-aux_dev
+
+# GAN training
+# python -m scripts.training.train_gan \
+#     --lr 1e-4 \
+#     --batch_size 2 \
+#     --max_epochs 100 \
+#     --patience 30 \
+#     --num_workers 4 \
+#     --use_aux 1 \
+#     --lambda_grad 0.0 \
+#     --lambda_water 0.0 \
+#     --water_weight 1.0 \
+#     --adaptation_strategy projection \
+#     --input_init pretrained_mean \
+#     --freeze_backbone 0 \
+#     --run_name 02_proj_full \
+#     --group GAN
 
 # # direct + pretrained mean — frozen  
 # python -m scripts.training.train_realesrgan_aux \
