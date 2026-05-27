@@ -15,7 +15,7 @@ conda activate sisr
 
 # -------- Project root (all relative paths resolve from here) --------
 cd /share/castor/home/e2406751/Superresolution-TIR
-# mkdir -p logs checkpoints/dev_v3
+mkdir -p logs checkpoints/dev_v4
 
 python -m scripts.training.train \
     --model swinir \
@@ -28,13 +28,10 @@ python -m scripts.training.train \
     --lambda_grad 1.0 \
     --lambda_water 0.5 \
     --water_weight 2.0 \
-    --adaptation_strategy direct \
-    --input_init pretrained_mean \
-    --freeze_backbone 1 \
-    --freeze_mode body \
+    --freeze_backbone 0 \
     --project TIR_sisr \
-    --run_name full_freeze \
-    --group fixed-aux_dev
+    --run_name exp1 \
+    --group spade_aux
 
 # GAN training
 # python -m scripts.training.train_gan \

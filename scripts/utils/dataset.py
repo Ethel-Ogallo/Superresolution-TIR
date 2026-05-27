@@ -5,6 +5,10 @@ from torch.utils.data import Dataset
 from pathlib import Path
 
 
+# ============================
+# SR DATASET (FIXED FOR SPADE DIRECT)
+# ============================
+
 class SRDataset(Dataset):
 
     def __init__(
@@ -12,25 +16,33 @@ class SRDataset(Dataset):
         split,
         patches_dir,
         stats_path,
-        # Input modes
         use_water_mask=False,
-        repeat_channels=False,   # keep for baseline compatibility
-        use_aux=False, 
+        use_aux=True,
         aux_dir=None,
         transform=None,
+        repeat_channels=False,
     ):
 
         self.split = split
         self.patches_dir = Path(patches_dir)
         self.transform = transform
-
-        self.use_water_mask = use_water_mask
         self.repeat_channels = repeat_channels
 
+        self.use_water_mask = use_water_mask
         self.use_aux = use_aux
-        self.aux_dir = Path(aux_dir) if aux_dir is not None else None
 
+        # -----------------------
+        # AUX PATHS (CORRECTED)
+        # -----------------------
+        if aux_dir is not None:
+            base = Path(aux_dir)
+            self.aux_lr_dir   = base
+            self.aux_mid_dir  = base.parent / "AUX_SPADE_MID"
+            self.aux_hr_dir   = base.parent / "AUX_SPADE_HR"
+
+        # -----------------------
         # STATS
+        # -----------------------
         with open(stats_path) as f:
             stats = json.load(f)
 
@@ -39,11 +51,12 @@ class SRDataset(Dataset):
         self.lr_mean = stats["lr"]["mean"]
         self.lr_std  = stats["lr"]["std"]
 
-        # PATHS
+        # -----------------------
+        # MAIN PATHS
+        # -----------------------
         self.hr_dir = self.patches_dir / split / "HR"
         self.lr_dir = self.patches_dir / split / "LR"
         self.wm_dir = self.patches_dir / split / "WM"
-
 
         self.files = sorted([f.name for f in self.hr_dir.glob("*.npy")])
 
@@ -51,10 +64,14 @@ class SRDataset(Dataset):
         return len(self.files)
 
     def __getitem__(self, idx):
+
         fname = self.files[idx]
 
-        hr = np.load(self.hr_dir / fname).astype(np.float32)
+        # -----------------------
+        # LOAD LR / HR
+        # -----------------------
         lr = np.load(self.lr_dir / fname).astype(np.float32)
+        hr = np.load(self.hr_dir / fname).astype(np.float32)
 
         hr_mask = np.isfinite(hr).astype(np.float32)
         lr_mask = np.isfinite(lr).astype(np.float32)
@@ -62,47 +79,62 @@ class SRDataset(Dataset):
         hr = np.where(hr_mask, hr, self.hr_mean)
         lr = np.where(lr_mask, lr, self.lr_mean)
 
+        # normalize
         hr = (hr - self.hr_mean) / self.hr_std
         lr = (lr - self.lr_mean) / self.lr_std
 
-        aux = None
-        if self.use_aux and self.aux_dir is not None:
-            aux = np.load(self.aux_dir / fname).astype(np.float32)
+        # -----------------------
+        # AUX (DIRECT + SPADE)
+        # -----------------------
+        aux_lr = None
+        aux_mid = None
+        aux_hr = None
 
-        # PASS AUX INTO TRANSFORM
+        if self.use_aux:
+            aux_lr = np.load(self.aux_lr_dir / fname).astype(np.float32)
+            aux_mid = np.load(self.aux_mid_dir / fname).astype(np.float32)
+            aux_hr = np.load(self.aux_hr_dir / fname).astype(np.float32)
+
+        # -----------------------
+        # TRANSFORM
+        # -----------------------
         if self.transform:
-            lr, hr, hr_mask, aux = self.transform(lr, hr, hr_mask, aux)
+            lr, hr, hr_mask, aux_lr, aux_mid, aux_hr = self.transform(
+                lr, hr, hr_mask, aux_lr, aux_mid, aux_hr
+            )
 
-        # channel handling
-        if self.repeat_channels:
-            hr = np.stack([hr] * 3, axis=0)
-            lr = np.stack([lr] * 3, axis=0)
-        else:
-            hr = hr[None]
-            lr = lr[None]
+        # -----------------------
+        # TO TENSOR
+        # -----------------------
+        lr = torch.from_numpy(lr).float()[None]
+        hr = torch.from_numpy(hr).float()[None]
 
-        hr       = torch.from_numpy(hr).float()
-        lr       = torch.from_numpy(lr).float()
-        hr_mask  = torch.from_numpy(hr_mask)[None].float()
-        lr_mask  = torch.from_numpy(lr_mask)[None].float()
-
-        water_mask = None
-        if self.use_water_mask:
-            wm = np.load(self.wm_dir / fname).astype(np.float32)
-            water_mask = torch.from_numpy(wm)[None].float()
+        hr_mask = torch.from_numpy(hr_mask).float()[None]
 
         sample = {
-            "lr":      lr,
-            "hr":      hr,
+            "lr": lr,
+            "hr": hr,
             "hr_mask": hr_mask,
-            "lr_mask": lr_mask,
-            "fname":   fname,
+            "fname": fname,
         }
 
-        if water_mask is not None:
-            sample["water_mask"] = water_mask
+        # -----------------------
+        # AUX OUTPUTS (CRITICAL)
+        # -----------------------
+        if aux_lr is not None:
+            sample["aux_lr"] = torch.from_numpy(aux_lr).float()
 
-        if aux is not None:
-            sample["aux"] = torch.from_numpy(aux).float()
+        if aux_mid is not None:
+            sample["aux_mid"] = torch.from_numpy(aux_mid).float()
+
+        if aux_hr is not None:
+            sample["aux_hr"] = torch.from_numpy(aux_hr).float()
+
+        # -----------------------
+        # WATER MASK
+        # -----------------------
+        if self.use_water_mask:
+            wm = np.load(self.wm_dir / fname).astype(np.float32)
+            sample["water_mask"] = torch.from_numpy(wm).float()[None]
 
         return sample

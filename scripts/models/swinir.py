@@ -1,108 +1,160 @@
-import os
+"""
+SwinIR with:
+  - Direct input fusion: LR TIR (1ch) + aux_lr (20ch) → 21ch into conv_first
+  - Pretrained-mean weight init for expanded input layer
+  - Two-stage SPADE in HQ reconstruction block:
+      spade_mid: fires after upsample x2 (64→128px), conditioned on aux_mid
+      spade_hr: fires after upsample x4 (128→256px), conditioned on aux_hr
+  - AuxEncoder: splits continuous vs LULC one-hot into separate pathways
+    before SPADE, producing a unified 96-dim embedding
+Aux channel layout (20ch total):
+  [0:5] spectral bands 1-5 continuous [0, 1]
+  [5] NDVI continuous [-1, 1]
+  [6] NDWI continuous [-1, 1]
+  [7] NDMI continuous [-1, 1]
+  [8:19] LULC one-hot (11cls) binary {0, 1}
+  [19] DEM continuous [0, 1]
+"""
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import lightning.pytorch as pl
 from basicsr.archs import swinir_arch
 from scripts.utils.metrics import shared_step
-import torch.nn.functional as F
 
 
-# --------------- AUX PROJECTION ------------------
-class AuxProjection(nn.Module):
-    def __init__(self, aux_chans=19, out_chans=3):
+# =========================================================
+# AUX ENCODER
+# =========================================================
+class AuxEncoder(nn.Module):
+    """
+    Input:  [B, 20, H, W]
+    Output: [B, embed_dim, H, W]  (96-dim recommended)
+    """
+    CONTINUOUS_IDX = list(range(0, 8)) + [19]   # 9 channels
+    LULC_IDX = list(range(8, 19))               # 11 channels
+
+    def __init__(self, aux_chans=20, embed_dim=96):
         super().__init__()
+        n_continuous = len(self.CONTINUOUS_IDX)  # 9
+        n_lulc = len(self.LULC_IDX)              # 11
 
-        in_chans = 1 + aux_chans
-
-        self.proj = nn.Sequential(
-            nn.Conv2d(in_chans, 64, 3, padding=1),
+        self.continuous_enc = nn.Sequential(
+            nn.Conv2d(n_continuous, embed_dim, 3, padding=1),
+            nn.GroupNorm(8, embed_dim),
             nn.ReLU(inplace=True),
-            nn.Conv2d(64, 48, 3, padding=1),
+            nn.Conv2d(embed_dim, embed_dim, 3, padding=1),
+            nn.GroupNorm(8, embed_dim),
             nn.ReLU(inplace=True),
-            nn.Conv2d(48, 32, 3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(32, out_chans, 1),
         )
 
-    def forward(self, tir, aux):
-        return self.proj(torch.cat([tir, aux], dim=1))
-
-
-# ---------- FEATURE FUSION ---------
-class FeatureFusion(nn.Module):
-    def __init__(self, embed_dim=180):
-        super().__init__()
+        self.lulc_enc = nn.Sequential(
+            nn.Conv2d(n_lulc, embed_dim, 1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(embed_dim, embed_dim, 3, padding=1),
+            nn.GroupNorm(8, embed_dim),
+            nn.ReLU(inplace=True),
+        )
 
         self.fuse = nn.Sequential(
             nn.Conv2d(embed_dim * 2, embed_dim, 1),
+            nn.GroupNorm(8, embed_dim),
             nn.ReLU(inplace=True),
-            nn.Conv2d(embed_dim, embed_dim, 3, padding=1),
         )
 
-        self.gate = nn.Parameter(torch.tensor(0.7))
+        self.out_chans = embed_dim
 
-    def forward(self, tir_feat, aux_feat):
-        return tir_feat + self.gate * self.fuse(
-            torch.cat([tir_feat, aux_feat], dim=1)
+    def forward(self, aux):
+        continuous = torch.cat([
+            aux[:, self.CONTINUOUS_IDX[:-1]], 
+            aux[:, 19:20]
+        ], dim=1)  # [B, 9, H, W]
+
+        lulc = aux[:, 8:19]  # [B, 11, H, W]
+
+        c = self.continuous_enc(continuous)
+        l = self.lulc_enc(lulc)
+
+        return self.fuse(torch.cat([c, l], dim=1))
+
+
+# =========================================================
+# SPADE BLOCK
+# =========================================================
+class SPADE(nn.Module):
+    def __init__(self, feat_ch, aux_embed_ch, hidden=128):
+        super().__init__()
+        self.norm = nn.GroupNorm(8, feat_ch, affine=False)   # 64 % 8 == 0
+
+        self.shared = nn.Sequential(
+            nn.Conv2d(aux_embed_ch, hidden, 3, padding=1),
+            nn.ReLU(inplace=True),
         )
+        self.gamma = nn.Conv2d(hidden, feat_ch, 3, padding=1)
+        self.beta = nn.Conv2d(hidden, feat_ch, 3, padding=1)
+
+    def forward(self, x, aux_embed):
+        assert x.shape[-2:] == aux_embed.shape[-2:], \
+            f"SPADE spatial mismatch: {x.shape[-2:]} vs {aux_embed.shape[-2:]}"
+
+        x_norm = self.norm(x)
+        h = self.shared(aux_embed)
+        return x_norm * (1 + self.gamma(h)) + self.beta(h)
 
 
-# ----------- SWINIR MODULE -----------
+# =========================================================
+# SPLIT UPSAMPLE
+# =========================================================
+def _split_upsample(upsample_seq):
+    layers = list(upsample_seq.children())
+    assert len(layers) == 4, f"Expected 4 layers, got {len(layers)}"
+    stage1 = nn.Sequential(layers[0], layers[1])  # 64→128
+    stage2 = nn.Sequential(layers[2], layers[3])  # 128→256
+    return stage1, stage2
+
+
+# =========================================================
+# MAIN MODEL
+# =========================================================
 class SwinIRModule(pl.LightningModule):
-
     def __init__(
         self,
         pretrained_path=None,
         learning_rate=1e-4,
         img_size=48,
         embed_dim=180,
-        adaptation_strategy="projection",
-        aux_chans=None,
+        aux_chans=20,
+        use_spade=True,
         lambda_grad=0.0,
         lambda_water=0.0,
-        water_weight=0.0,
+        water_weight=2.0,
         hr_mean=None,
         hr_std=None,
         data_range=None,
         data_min=None,
         freeze_backbone=False,
-        freeze_mode="none",   # none | body | body+first
-        input_init="pretrained_mean",
-        **kwargs
+        freeze_mode="none",
+        **kwargs,
     ):
         super().__init__()
-
         self.save_hyperparameters()
 
-        self.strategy = adaptation_strategy
         self.aux_chans = aux_chans
+        self.use_spade = use_spade
         self.freeze_backbone = freeze_backbone
         self.freeze_mode = freeze_mode
-
-        # only keep input_init for direct strategy
-        self.input_init = (
-            input_init if adaptation_strategy == "direct"
-            else None
-        )
-
         self.lambda_grad = lambda_grad
         self.lambda_water = lambda_water
         self.water_weight = water_weight
         self.hr_mean = hr_mean
         self.hr_std = hr_std
-        self.DATA_RANGE   = data_range
-        self.DATA_MIN     = data_min
+        self.DATA_RANGE = data_range
+        self.DATA_MIN = data_min
 
-        if aux_chans is None:
-            raise ValueError("aux_chans must be provided")
-
-        # --------- BACKBONE ---------
-        body_in_chans = 1 + aux_chans if adaptation_strategy == "direct" else 3
-
+        # Backbone
         self.body = swinir_arch.SwinIR(
             upscale=4,
-            in_chans=body_in_chans,
+            in_chans=1 + aux_chans,
             img_size=img_size,
             window_size=8,
             img_range=1.0,
@@ -114,112 +166,38 @@ class SwinIRModule(pl.LightningModule):
             resi_connection="1conv",
         )
 
-        # -------------- STRATEGY HEADS ----------------
-        self.proj = self.proj_out = None
-        self.aux_encoder = self.fusion = self.fusion_out = None
-        self.direct_out = None
+        self.upsample_s1, self.upsample_s2 = _split_upsample(self.body.upsample)
 
-        if adaptation_strategy == "projection":
-            self.proj = AuxProjection(aux_chans=aux_chans)
-            self.proj_out = nn.Conv2d(3, 1, 1)
+        # self.out = nn.Conv2d(3, 1, 1)
+        self.final_proj = nn.Conv2d(21, 3, kernel_size=1)   
+        self.out = nn.Conv2d(3, 1, kernel_size=1)
 
-        elif adaptation_strategy == "direct":
-            self.direct_out = nn.Conv2d(1 + aux_chans, 1, 1)
+        # SPADE settings
+        self.feat_ch_for_spade = 64          # Important: actual channels after upsample stage
 
-        elif adaptation_strategy == "fusion":
-            self.aux_encoder = nn.Sequential(
-                nn.Conv2d(aux_chans, 64, 3, padding=1),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(64, embed_dim, 1),
-            )
-            self.fusion = FeatureFusion(embed_dim=embed_dim)
-            self.fusion_out = nn.Conv2d(3, 1, 1)
+        if use_spade:
+            self.aux_encoder = AuxEncoder(aux_chans=aux_chans, embed_dim=96)
+            AUX_EMBED_CH = self.aux_encoder.out_chans
 
-        # DIRECT EXPANSION
-        if adaptation_strategy == "direct":
-            self._expand_direct_input_layer()
+            self.spade_mid = SPADE(feat_ch=self.feat_ch_for_spade, aux_embed_ch=AUX_EMBED_CH)
+            self.spade_hr = SPADE(feat_ch=self.feat_ch_for_spade, aux_embed_ch=AUX_EMBED_CH)
+        else:
+            self.aux_encoder = None
+            self.spade_mid = None
+            self.spade_hr = None
 
-        # PRETRAIN LOAD
         if pretrained_path:
             self._load_pretrained(pretrained_path)
 
+        self._expand_input_pretrained_mean()
         self._print_setup()
 
-    # PRINT CONFIG
-    def _print_setup(self):
-        print("\n================ MODEL SETUP ================")
-        print(f"Strategy       : {self.strategy}")
-        print(f"Freeze backbone : {self.freeze_backbone}")
-        print(f"Freeze mode     : {self.freeze_mode}")
-        print("============================================\n")
-
-    # ---------------- FREEZING LOGIC --------------------
-    def _apply_freezing(self):
-
-        if not self.freeze_backbone:
-            return
-
-        # freeze full backbone
-        for p in self.body.parameters():
-            p.requires_grad = False
-
-        # selective unfreeze
-        if self.freeze_mode == "body+first":
-            for p in self.body.conv_first.parameters():
-                p.requires_grad = True
-
-        elif self.freeze_mode == "body":
-            pass
-
-        print("\n[INFO] FREEZING SUMMARY")
-        for n, p in self.body.named_parameters():
-            print(f"{n:40s} | {'TRAIN' if p.requires_grad else 'FROZEN'}")
-
-    # ------------- DIRECT EXPANSION -----------------
-    # def _expand_direct_input_layer(self):
-    #     old = self.body.conv_first
-    #     in_chans = 1 + self.aux_chans
-
-    #     new = nn.Conv2d(
-    #         in_chans,
-    #         old.out_channels,
-    #         old.kernel_size,
-    #         old.stride,
-    #         old.padding,
-    #         bias=(old.bias is not None),
-    #     )
-
-    #     with torch.no_grad():
-    #         new.weight.zero_()
-
-    #         # ---- TIR channel ----
-    #         # repeat RGB pretrained filters into single-channel form
-    #         # (collapse RGB → 1 channel by averaging, then repeat is NOT needed here)
-    #         tir_init = old.weight.mean(dim=1, keepdim=True)
-    #         new.weight[:, 0:1] = tir_init
-
-    #         # ---- AUX channels ----
-    #         # repeat SAME initialization for all aux channels
-    #         # (strong weight sharing assumption at initialization)
-    #         aux_init = old.weight.mean(dim=1, keepdim=True)
-    #         new.weight[:, 1:] = aux_init.repeat(1, in_chans - 1, 1, 1)
-
-    #         if old.bias is not None:
-    #             new.bias.copy_(old.bias)
-
-    #     self.body.conv_first = new
-    #     print(f"[INFO] conv_first expanded 3 - {in_chans} (REPEAT INIT)")
-
-    def _expand_direct_input_layer(self):
-        
-        if self.strategy != "direct":
-            return
-
-        if self.input_init is None:
-            raise ValueError("input_init must be set for direct strategy")
-
-        old = self.body.conv_first
-        in_chans = 1 + self.aux_chans
+    # ──────────────────────────────────────────────────────────────
+    # INPUT EXPANSION
+    # ──────────────────────────────────────────────────────────────
+    def _expand_input_pretrained_mean(self):
+        old      = self.body.conv_first
+        in_chans = 1 + self.aux_chans   # 21
 
         new = nn.Conv2d(
             in_chans,
@@ -231,113 +209,115 @@ class SwinIRModule(pl.LightningModule):
         )
 
         with torch.no_grad():
-            # Different initialization strategies for new input channels
-            # PRETRAINED MEAN + REPEAT
-            if self.input_init == "pretrained_mean":
-
-                avg = old.weight.mean(dim=1,keepdim=True)
-                new.weight[:] = avg.repeat(1,in_chans,1,1)
-
-            # GAUSSIAN
-            elif self.input_init == "gaussian":
-
-                nn.init.normal_(
-                    new.weight,
-                    mean=0.0,
-                    std=0.02
-                )
-
-            # XAVIER
-            elif self.input_init == "xavier":
-                nn.init.xavier_uniform_(new.weight)
-
-            # HE / KAIMING
-            elif self.input_init == "he":
-                nn.init.kaiming_normal_(new.weight, mode="fan_out", nonlinearity="relu")
-
-            elif self.input_init == "partial_preserve":
-                # TIR channel: strong pretrained prior
-                tir_init = old.weight.mean(dim=1, keepdim=True)
-                new.weight[:, 0:1] = tir_init
-                # AUX channels: weakly structured init (NOT identical copies)
-                aux_init = old.weight.mean(dim=1, keepdim=True)
-                noise = torch.randn_like(new.weight[:, 1:]) * 0.01
-                new.weight[:, 1:] = aux_init + noise
-
-            else:
-                raise ValueError(f"Unknown input_init: {self.input_init}")
-
+            # Average pretrained RGB filters → single channel template
+            # shape: [out_ch, 1, k, k]
+            avg = old.weight.mean(dim=1, keepdim=True)
+            # Repeat for all 21 input channels
+            new.weight[:] = avg.repeat(1, in_chans, 1, 1)
             if old.bias is not None:
                 new.bias.copy_(old.bias)
 
-
         self.body.conv_first = new
-
         print(
-            f"[INFO] conv_first expanded "
-            f"3 - {in_chans} "
-            f"({self.input_init})")
+            f"[INFO] conv_first expanded 3 → {in_chans}ch "
+            f"(pretrained_mean init)"
+        )
 
-    # -------------- PRETRAIN LOADING ----------------
+    # ──────────────────────────────────────────────────────────────
+    # PRETRAINED LOAD
+    # Only loads keys that exist in body AND have matching shapes.
+    # conv_first is intentionally skipped here (shape mismatch at 3ch)
+    # and re-initialised by _expand_input_pretrained_mean above.
+    # ──────────────────────────────────────────────────────────────
     def _load_pretrained(self, path):
-
-        ckpt = torch.load(path, map_location="cpu", weights_only=True)
-        state = ckpt.get("params", ckpt)
+        ckpt    = torch.load(path, map_location="cpu", weights_only=True)
+        state   = ckpt.get("params", ckpt)
 
         matched = {
             k: v for k, v in state.items()
             if k in self.body.state_dict()
             and v.shape == self.body.state_dict()[k].shape
         }
+        missing = set(self.body.state_dict().keys()) - set(matched.keys())
 
         self.body.load_state_dict(matched, strict=False)
+        print(
+            f"[pretrained] loaded {len(matched)} keys, "
+            f"skipped {len(missing)} (shape mismatch or new layers)"
+        )
 
-        print(f"[INFO] Loaded {len(matched)} / {len(self.body.state_dict())} weights")
+    # ──────────────────────────────────────────────────────────────
+    # FREEZING
+    # Called from configure_optimizers (after model is on device)
+    # ──────────────────────────────────────────────────────────────
+    def _apply_freezing(self):
+        if not self.freeze_backbone:
+            return
 
-    
-    # ---------- DENORMALIZE -------------
+        for p in self.body.parameters():
+            p.requires_grad = False
+
+        # body+first: unfreeze conv_first so expanded input layer
+        # can still adapt even when the rest of the backbone is frozen
+        if self.freeze_mode == "body+first":
+            for p in self.body.conv_first.parameters():
+                p.requires_grad = True
+
+        frozen = sum(
+            1 for p in self.body.parameters() if not p.requires_grad
+        )
+        print(
+            f"[INFO] Froze {frozen} backbone parameter tensors "
+            f"(mode={self.freeze_mode})"
+        )
+
+    # ──────────────────────────────────────────────────────────────
+    # DENORMALIZE (used in shared_step for metric computation)
+    # ──────────────────────────────────────────────────────────────
     def denormalize(self, x, mean=None, std=None):
         if mean is None or std is None:
             return x
         mean = torch.tensor(mean, device=x.device, dtype=x.dtype)
-        std = torch.tensor(std, device=x.device, dtype=x.dtype)
+        std  = torch.tensor(std,  device=x.device, dtype=x.dtype)
         return x * std + mean
 
-    # --------------- FORWARD --------------------
+    # ──────────────────────────────────────────────────────────────
+    # FORWARD
+    # ──────────────────────────────────────────────────────────────
     def forward(self, batch):
-
         lr = batch["lr"]
-        aux = batch.get("aux", None)
+        aux_lr = batch["aux_lr"]
+        aux_mid = batch["aux_mid"]
+        aux_hr = batch["aux_hr"]
 
-        if self.strategy == "direct":
-            x = torch.cat([lr, aux], dim=1)
-            out = self.body(x)
-            return self.direct_out(out)
+        x = torch.cat([lr, aux_lr], dim=1)                    # [B, 21, 64, 64]
 
-        if self.strategy == "projection":
-            x = self.proj(lr, aux)
-            out = self.body(x)
-            return self.proj_out(out)
+        feat = self.body.conv_first(x)
+        feat = self.body.forward_features(feat)
+        feat = self.body.conv_before_upsample(feat)
 
-        if self.strategy == "fusion":
-            x = lr.repeat(1, 3, 1, 1)
+        # Upsample + SPADE Stage 1
+        feat = self.upsample_s1(feat)                         # [B, 64, 128, 128]
+        if self.spade_mid is not None:
+            embed_mid = self.aux_encoder(aux_mid)
+            feat = self.spade_mid(feat, embed_mid)
 
-            feat = self.body.conv_first(x)
-            aux_feat = self.aux_encoder(aux)
+        # Upsample + SPADE Stage 2
+        feat = self.upsample_s2(feat)                         # [B, 64, 256, 256]
+        if self.spade_hr is not None:
+            embed_hr = self.aux_encoder(aux_hr)
+            feat = self.spade_hr(feat, embed_hr)
 
-            aux_feat = F.interpolate(aux_feat, feat.shape[-2:])
+        # SwinIR final layer (should naturally output 21 channels)
+        feat = self.body.conv_last(feat)                      # [B, 21, 256, 256]
 
-            feat = self.fusion(feat, aux_feat)
+        # Collapse to target 1 channel
+        feat = self.final_proj(feat)                          # [B, 3, 256, 256]
+        return self.out(feat)                                 # [B, 1, 256, 256]
 
-            feat = self.body.forward_features(feat)
-            feat = self.body.conv_after_body(feat)
-            feat = self.body.conv_before_upsample(feat)
-            feat = self.body.upsample(feat)
-            feat = self.body.conv_last(feat)
-
-            return self.fusion_out(feat)
-
-    # --------------- TRAIN LOOP --------------------
+    # ──────────────────────────────────────────────────────────────
+    # LIGHTNING STEPS
+    # ──────────────────────────────────────────────────────────────
     def training_step(self, batch, batch_idx):
         return shared_step(self, batch, "train")
 
@@ -347,41 +327,76 @@ class SwinIRModule(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         return shared_step(self, batch, "test")
 
-    # --------------- OPTIMIZER & SCHEDULER --------------------
+    # ──────────────────────────────────────────────────────────────
+    # OPTIMIZER + SCHEDULER
+    # Three learning rate groups:
+    #   backbone × 0.1  — pretrained, fine-tune slowly
+    #   out head × 1.0  — trained from scratch, full lr
+    #   SPADE+enc × 1.0 — trained from scratch, full lr
+    # ──────────────────────────────────────────────────────────────
     def configure_optimizers(self):
-
         self._apply_freezing()
 
         params = []
 
-        # backbone (if trainable)
-        if not self.freeze_backbone:
+        # Backbone — lower lr to preserve pretrained features
+        backbone_params = (
+            [p for p in self.body.parameters() if p.requires_grad]
+            if self.freeze_backbone
+            else list(self.body.parameters())
+        )
+        if backbone_params:
             params.append({
-                "params": self.body.parameters(),
-                "lr": self.hparams.learning_rate * 0.1,
-            })
-        else:
-            params.append({
-                "params": [p for p in self.body.parameters() if p.requires_grad],
+                "params": backbone_params,
                 "lr": self.hparams.learning_rate * 0.1,
             })
 
-        # heads
-        for m in [self.proj, self.proj_out, self.direct_out,
-                  self.aux_encoder, self.fusion, self.fusion_out]:
-            if m is not None:
+        # Output head — full lr
+        params.append({
+            "params": self.out.parameters(),
+            "lr": self.hparams.learning_rate,
+        })
+
+        # SPADE modules + aux encoder — full lr
+        for module in [self.aux_encoder, self.spade_mid, self.spade_hr]:
+            if module is not None:
                 params.append({
-                    "params": m.parameters(),
+                    "params": module.parameters(),
                     "lr": self.hparams.learning_rate,
                 })
 
         opt = optim.Adam(params)
 
         sch = optim.lr_scheduler.ReduceLROnPlateau(
-            opt, mode="max", factor=0.5, patience=5
+            opt,
+            mode="max",
+            factor=0.5,
+            patience=5,
         )
 
         return {
             "optimizer": opt,
-            "lr_scheduler": {"scheduler": sch, "monitor": "val_full_psnr"}
+            "lr_scheduler": {
+                "scheduler": sch,
+                "monitor": "val_full_psnr",
+            },
         }
+
+    # ──────────────────────────────────────────────────────────────
+    def _print_setup(self):
+        n_body  = sum(p.numel() for p in self.body.parameters())
+        n_spade = sum(
+            p.numel()
+            for m in [self.aux_encoder, self.spade_mid, self.spade_hr]
+            if m is not None
+            for p in m.parameters()
+        )
+        print("\n========= SwinIR DIRECT + TWO-STAGE SPADE =========")
+        print(f"  aux_chans    : {self.aux_chans}")
+        print(f"  use_spade    : {self.use_spade}")
+        print(f"  lambda_grad  : {self.lambda_grad}")
+        print(f"  lambda_water : {self.lambda_water}")
+        print(f"  freeze_mode  : {self.freeze_mode}")
+        print(f"  backbone params : {n_body:,}")
+        print(f"  SPADE params    : {n_spade:,}")
+        print("====================================================\n")
