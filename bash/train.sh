@@ -30,7 +30,7 @@ python -m scripts.training.train \
     --freeze_backbone 0 \
     --freeze_mode none \
     --project TIR_sisr \
-    --run_name exp3 \
+    --run_name exp4 \
     --group spade_aux
 
 # GAN training

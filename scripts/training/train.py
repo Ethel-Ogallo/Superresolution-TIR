@@ -57,7 +57,7 @@ def load_config(model_name):
 # =========================================================
 def get_model_class(model_name):
     if model_name == "swinir":
-        from scripts.models.swinir import SwinIRModule
+        from scripts.models.swinir_copy import SwinIRModule
         return SwinIRModule
     raise ValueError(f"Unknown model: {model_name}")
 
@@ -87,7 +87,7 @@ def build_model(model_name, cfg, stats, args, aux_chans):
         freeze_mode=args.freeze_mode,
         # New parameters for SPADE stability
         spade_lr_scale=cfg.get("spade_lr_scale", 0.3),
-        aux_embed_dim=cfg.get("aux_embed_dim", 64),
+        # aux_embed_dim=cfg.get("aux_embed_dim", 64),
     )
 
 
