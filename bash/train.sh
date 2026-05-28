@@ -15,7 +15,7 @@ conda activate sisr
 
 # -------- Project root (all relative paths resolve from here) --------
 cd /share/castor/home/e2406751/Superresolution-TIR
-mkdir -p logs checkpoints/dev_v4
+# mkdir -p logs checkpoints/dev_v4
 
 python -m scripts.training.train \
     --model swinir \
@@ -25,12 +25,12 @@ python -m scripts.training.train \
     --patience 30 \
     --num_workers 4 \
     --use_aux 1 \
-    --lambda_grad 1.0 \
-    --lambda_water 0.5 \
-    --water_weight 2.0 \
+    --lambda_grad 0.1 \
+    --lambda_water 0.1 \
     --freeze_backbone 0 \
+    --freeze_mode none \
     --project TIR_sisr \
-    --run_name exp1 \
+    --run_name exp3 \
     --group spade_aux
 
 # GAN training

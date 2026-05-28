@@ -2,18 +2,8 @@
 SwinIR with:
   - Direct input fusion: LR TIR (1ch) + aux_lr (20ch) → 21ch into conv_first
   - Pretrained-mean weight init for expanded input layer
-  - Two-stage SPADE in HQ reconstruction block:
-      spade_mid: fires after upsample x2 (64→128px), conditioned on aux_mid
-      spade_hr: fires after upsample x4 (128→256px), conditioned on aux_hr
-  - AuxEncoder: splits continuous vs LULC one-hot into separate pathways
-    before SPADE, producing a unified 96-dim embedding
-Aux channel layout (20ch total):
-  [0:5] spectral bands 1-5 continuous [0, 1]
-  [5] NDVI continuous [-1, 1]
-  [6] NDWI continuous [-1, 1]
-  [7] NDMI continuous [-1, 1]
-  [8:19] LULC one-hot (11cls) binary {0, 1}
-  [19] DEM continuous [0, 1]
+  - Two-stage SPADE in HQ reconstruction block
+  - AuxEncoder with reduced dimension + lower LR for stability
 """
 import torch
 import torch.nn as nn
@@ -28,16 +18,16 @@ from scripts.utils.metrics import shared_step
 # =========================================================
 class AuxEncoder(nn.Module):
     """
-    Input:  [B, 20, H, W]
-    Output: [B, embed_dim, H, W]  (96-dim recommended)
+    Input: [B, 20, H, W]
+    Output: [B, embed_dim, H, W]
     """
-    CONTINUOUS_IDX = list(range(0, 8)) + [19]   # 9 channels
+    CONTINUOUS_IDX = list(range(0, 8)) + [19]  # 9 channels
     LULC_IDX = list(range(8, 19))               # 11 channels
 
-    def __init__(self, aux_chans=20, embed_dim=96):
+    def __init__(self, aux_chans=20, embed_dim=64):   # Reduced default
         super().__init__()
-        n_continuous = len(self.CONTINUOUS_IDX)  # 9
-        n_lulc = len(self.LULC_IDX)              # 11
+        n_continuous = len(self.CONTINUOUS_IDX)
+        n_lulc = len(self.LULC_IDX)
 
         self.continuous_enc = nn.Sequential(
             nn.Conv2d(n_continuous, embed_dim, 3, padding=1),
@@ -61,20 +51,18 @@ class AuxEncoder(nn.Module):
             nn.GroupNorm(8, embed_dim),
             nn.ReLU(inplace=True),
         )
-
         self.out_chans = embed_dim
 
     def forward(self, aux):
         continuous = torch.cat([
-            aux[:, self.CONTINUOUS_IDX[:-1]], 
+            aux[:, self.CONTINUOUS_IDX[:-1]],
             aux[:, 19:20]
-        ], dim=1)  # [B, 9, H, W]
+        ], dim=1)
 
-        lulc = aux[:, 8:19]  # [B, 11, H, W]
+        lulc = aux[:, 8:19]
 
         c = self.continuous_enc(continuous)
         l = self.lulc_enc(lulc)
-
         return self.fuse(torch.cat([c, l], dim=1))
 
 
@@ -84,7 +72,7 @@ class AuxEncoder(nn.Module):
 class SPADE(nn.Module):
     def __init__(self, feat_ch, aux_embed_ch, hidden=128):
         super().__init__()
-        self.norm = nn.GroupNorm(8, feat_ch, affine=False)   # 64 % 8 == 0
+        self.norm = nn.GroupNorm(8, feat_ch, affine=False)
 
         self.shared = nn.Sequential(
             nn.Conv2d(aux_embed_ch, hidden, 3, padding=1),
@@ -96,7 +84,6 @@ class SPADE(nn.Module):
     def forward(self, x, aux_embed):
         assert x.shape[-2:] == aux_embed.shape[-2:], \
             f"SPADE spatial mismatch: {x.shape[-2:]} vs {aux_embed.shape[-2:]}"
-
         x_norm = self.norm(x)
         h = self.shared(aux_embed)
         return x_norm * (1 + self.gamma(h)) + self.beta(h)
@@ -108,8 +95,8 @@ class SPADE(nn.Module):
 def _split_upsample(upsample_seq):
     layers = list(upsample_seq.children())
     assert len(layers) == 4, f"Expected 4 layers, got {len(layers)}"
-    stage1 = nn.Sequential(layers[0], layers[1])  # 64→128
-    stage2 = nn.Sequential(layers[2], layers[3])  # 128→256
+    stage1 = nn.Sequential(layers[0], layers[1])
+    stage2 = nn.Sequential(layers[2], layers[3])
     return stage1, stage2
 
 
@@ -127,29 +114,32 @@ class SwinIRModule(pl.LightningModule):
         use_spade=True,
         lambda_grad=0.0,
         lambda_water=0.0,
-        water_weight=2.0,
         hr_mean=None,
         hr_std=None,
         data_range=None,
         data_min=None,
         freeze_backbone=False,
         freeze_mode="none",
+        spade_lr_scale=0.3,      # ← NEW: Lower LR for SPADE
+        aux_embed_dim=64,        # ← NEW: Reduced from 96
         **kwargs,
     ):
         super().__init__()
         self.save_hyperparameters()
 
+        self.lambda_grad = lambda_grad
+        self.lambda_water = lambda_water
+        self.hr_mean = hr_mean
+        self.hr_std = hr_std
+        self.DATA_RANGE   = data_range
+        self.DATA_MIN     = data_min
+
         self.aux_chans = aux_chans
         self.use_spade = use_spade
         self.freeze_backbone = freeze_backbone
         self.freeze_mode = freeze_mode
-        self.lambda_grad = lambda_grad
-        self.lambda_water = lambda_water
-        self.water_weight = water_weight
-        self.hr_mean = hr_mean
-        self.hr_std = hr_std
-        self.DATA_RANGE = data_range
-        self.DATA_MIN = data_min
+        self.spade_lr_scale = spade_lr_scale
+        self.aux_embed_dim = aux_embed_dim
 
         # Backbone
         self.body = swinir_arch.SwinIR(
@@ -168,15 +158,13 @@ class SwinIRModule(pl.LightningModule):
 
         self.upsample_s1, self.upsample_s2 = _split_upsample(self.body.upsample)
 
-        # self.out = nn.Conv2d(3, 1, 1)
-        self.final_proj = nn.Conv2d(21, 3, kernel_size=1)   
+        self.final_proj = nn.Conv2d(21, 3, kernel_size=1)
         self.out = nn.Conv2d(3, 1, kernel_size=1)
 
-        # SPADE settings
-        self.feat_ch_for_spade = 64          # Important: actual channels after upsample stage
+        self.feat_ch_for_spade = 64
 
         if use_spade:
-            self.aux_encoder = AuxEncoder(aux_chans=aux_chans, embed_dim=96)
+            self.aux_encoder = AuxEncoder(aux_chans=aux_chans, embed_dim=aux_embed_dim)
             AUX_EMBED_CH = self.aux_encoder.out_chans
 
             self.spade_mid = SPADE(feat_ch=self.feat_ch_for_spade, aux_embed_ch=AUX_EMBED_CH)
@@ -335,68 +323,61 @@ class SwinIRModule(pl.LightningModule):
     #   SPADE+enc × 1.0 — trained from scratch, full lr
     # ──────────────────────────────────────────────────────────────
     def configure_optimizers(self):
-        self._apply_freezing()
+            self._apply_freezing()
+            params = []
 
-        params = []
-
-        # Backbone — lower lr to preserve pretrained features
-        backbone_params = (
-            [p for p in self.body.parameters() if p.requires_grad]
-            if self.freeze_backbone
-            else list(self.body.parameters())
-        )
-        if backbone_params:
-            params.append({
-                "params": backbone_params,
-                "lr": self.hparams.learning_rate * 0.1,
-            })
-
-        # Output head — full lr
-        params.append({
-            "params": self.out.parameters(),
-            "lr": self.hparams.learning_rate,
-        })
-
-        # SPADE modules + aux encoder — full lr
-        for module in [self.aux_encoder, self.spade_mid, self.spade_hr]:
-            if module is not None:
+            # Backbone — very conservative LR
+            backbone_params = [p for p in self.body.parameters() if p.requires_grad]
+            if backbone_params:
                 params.append({
-                    "params": module.parameters(),
-                    "lr": self.hparams.learning_rate,
+                    "params": backbone_params,
+                    "lr": self.hparams.learning_rate * 0.1,
                 })
 
-        opt = optim.Adam(params)
+            # Output head
+            params.append({
+                "params": self.out.parameters(),
+                "lr": self.hparams.learning_rate,
+            })
 
-        sch = optim.lr_scheduler.ReduceLROnPlateau(
-            opt,
-            mode="max",
-            factor=0.5,
-            patience=5,
-        )
+            # SPADE + AuxEncoder — Lower LR + light regularization
+            for module in [self.aux_encoder, self.spade_mid, self.spade_hr]:
+                if module is not None:
+                    params.append({
+                        "params": module.parameters(),
+                        "lr": self.hparams.learning_rate * self.hparams.spade_lr_scale,
+                        "weight_decay": 1e-5,
+                    })
 
-        return {
-            "optimizer": opt,
-            "lr_scheduler": {
-                "scheduler": sch,
-                "monitor": "val_full_psnr",
-            },
-        }
+            opt = optim.Adam(params)
+
+            sch = optim.lr_scheduler.ReduceLROnPlateau(
+                opt, mode="max", factor=0.5, patience=6, verbose=True
+            )
+
+            return {
+                "optimizer": opt,
+                "lr_scheduler": {
+                    "scheduler": sch,
+                    "monitor": "val_full_psnr",
+                },
+            }
 
     # ──────────────────────────────────────────────────────────────
     def _print_setup(self):
-        n_body  = sum(p.numel() for p in self.body.parameters())
-        n_spade = sum(
-            p.numel()
-            for m in [self.aux_encoder, self.spade_mid, self.spade_hr]
-            if m is not None
-            for p in m.parameters()
-        )
-        print("\n========= SwinIR DIRECT + TWO-STAGE SPADE =========")
-        print(f"  aux_chans    : {self.aux_chans}")
-        print(f"  use_spade    : {self.use_spade}")
-        print(f"  lambda_grad  : {self.lambda_grad}")
-        print(f"  lambda_water : {self.lambda_water}")
-        print(f"  freeze_mode  : {self.freeze_mode}")
-        print(f"  backbone params : {n_body:,}")
-        print(f"  SPADE params    : {n_spade:,}")
-        print("====================================================\n")
+            n_body = sum(p.numel() for p in self.body.parameters())
+            n_spade = sum(
+                p.numel()
+                for m in [self.aux_encoder, self.spade_mid, self.spade_hr]
+                if m is not None
+                for p in m.parameters()
+            )
+            print("\n========= SwinIR DIRECT + TWO-STAGE SPADE =========")
+            print(f" aux_chans       : {self.aux_chans}")
+            print(f" aux_embed_dim   : {self.aux_embed_dim}")
+            print(f" use_spade       : {self.use_spade}")
+            print(f" spade_lr_scale  : {self.spade_lr_scale}")
+            print(f" freeze_mode     : {self.freeze_mode}")
+            print(f" backbone params : {n_body:,}")
+            print(f" SPADE params    : {n_spade:,}")
+            print("====================================================\n")

@@ -77,17 +77,17 @@ def build_model(model_name, cfg, stats, args, aux_chans):
         pretrained_path=pretrained_path,
         learning_rate=args.lr,
         aux_chans=aux_chans,
-        # Removed: lulc_channels (no longer used)
-        # input_init is ignored for now (hardcoded pretrained_mean)
         lambda_grad=args.lambda_grad,
         lambda_water=args.lambda_water,
-        water_weight=args.water_weight,
         hr_mean=stats["hr"]["mean"],
         hr_std=stats["hr"]["std"],
         data_range=stats["hr_data_range"],
         data_min=stats["hr_percentiles"]["p1"],
         freeze_backbone=bool(args.freeze_backbone),
         freeze_mode=args.freeze_mode,
+        # New parameters for SPADE stability
+        spade_lr_scale=cfg.get("spade_lr_scale", 0.3),
+        aux_embed_dim=cfg.get("aux_embed_dim", 64),
     )
 
 
@@ -240,7 +240,6 @@ def parse_args():
 
     p.add_argument("--lambda_grad", type=float, default=0.0)
     p.add_argument("--lambda_water", type=float, default=0.0)
-    p.add_argument("--water_weight", type=float, default=2.0)
 
     p.add_argument("--freeze_backbone", type=int, default=0)
     p.add_argument("--freeze_mode", type=str, default="none")
