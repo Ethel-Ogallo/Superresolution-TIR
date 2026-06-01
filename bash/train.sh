@@ -1,8 +1,8 @@
-#!/bin/bash -l
-#SBATCH --job-name=sisr
-#SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=6
-#SBATCH --mem=32G
+# #!/bin/bash -l
+# #SBATCH --job-name=sisr
+# #SBATCH --gres=gpu:1
+# #SBATCH --cpus-per-task=6
+# #SBATCH --mem=32G
 # #SBATCH --output=logs/01_fusion_aux_%j.log
 # #SBATCH --output=logs/dir_aux_%j.log
 
@@ -21,17 +21,17 @@ python -m scripts.training.train \
     --model swinir \
     --lr 1e-4 \
     --batch_size 2 \
-    --max_epochs 100 \
-    --patience 30 \
+    --max_epochs 2 \
+    --patience 0 \
     --num_workers 4 \
     --use_aux 1 \
-    --lambda_grad 0.1 \
-    --lambda_water 0.1 \
+    --lambda_grad 0.2 \
+    --lambda_water 2.0 \
     --freeze_backbone 0 \
     --freeze_mode none \
     --project TIR_sisr \
-    --run_name exp4 \
-    --group spade_aux
+    --run_name flop_test \
+    --group spade_time
 
 # GAN training
 # python -m scripts.training.train_gan \
