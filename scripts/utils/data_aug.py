@@ -1,9 +1,6 @@
 """
 augmentations.py — Spatial augmentations for TIR Super-Resolution 
 
-Rules:
-- All transforms applied identically to LR, HR and hr_mask to preserve spatial correspondence
-- LR transforms use scale-correct versions of spatial ops
 """
 
 import random
@@ -16,21 +13,24 @@ class RandomHorizontalFlip:
         self.p = p
 
     def __call__(self, lr, hr, hr_mask,
-                 aux_lr=None, aux_mid=None, aux_hr=None):
+                 aux_lr=None, aux_mid=None, aux_hr=None, water_mask=None):
 
         if random.random() < self.p:
-            lr = np.fliplr(lr).copy()
-            hr = np.fliplr(hr).copy()
-            hr_mask = np.fliplr(hr_mask).copy()
+            # Axis -1 is always Width for [H, W], [1, H, W], or [C, H, W]
+            lr = np.flip(lr, axis=-1).copy()
+            hr = np.flip(hr, axis=-1).copy()
+            hr_mask = np.flip(hr_mask, axis=-1).copy()
 
+            if water_mask is not None:
+                water_mask = np.flip(water_mask, axis=-1).copy()
             if aux_lr is not None:
-                aux_lr = np.fliplr(aux_lr).copy()
+                aux_lr = np.flip(aux_lr, axis=-1).copy()
             if aux_mid is not None:
-                aux_mid = np.fliplr(aux_mid).copy()
+                aux_mid = np.flip(aux_mid, axis=-1).copy()
             if aux_hr is not None:
-                aux_hr = np.fliplr(aux_hr).copy()
+                aux_hr = np.flip(aux_hr, axis=-1).copy()
 
-        return lr, hr, hr_mask, aux_lr, aux_mid, aux_hr
+        return lr, hr, hr_mask, aux_lr, aux_mid, aux_hr, water_mask
 
 
 class RandomVerticalFlip:
@@ -38,43 +38,49 @@ class RandomVerticalFlip:
         self.p = p
 
     def __call__(self, lr, hr, hr_mask,
-                 aux_lr=None, aux_mid=None, aux_hr=None):
+                 aux_lr=None, aux_mid=None, aux_hr=None, water_mask=None):
 
         if random.random() < self.p:
-            lr = np.flipud(lr).copy()
-            hr = np.flipud(hr).copy()
-            hr_mask = np.flipud(hr_mask).copy()
+            # Axis -2 is always Height for [H, W], [1, H, W], or [C, H, W]
+            lr = np.flip(lr, axis=-2).copy()
+            hr = np.flip(hr, axis=-2).copy()
+            hr_mask = np.flip(hr_mask, axis=-2).copy()
 
+            if water_mask is not None:
+                water_mask = np.flip(water_mask, axis=-2).copy()
             if aux_lr is not None:
-                aux_lr = np.flipud(aux_lr).copy()
+                aux_lr = np.flip(aux_lr, axis=-2).copy()
             if aux_mid is not None:
-                aux_mid = np.flipud(aux_mid).copy()
+                aux_mid = np.flip(aux_mid, axis=-2).copy()
             if aux_hr is not None:
-                aux_hr = np.flipud(aux_hr).copy()
+                aux_hr = np.flip(aux_hr, axis=-2).copy()
 
-        return lr, hr, hr_mask, aux_lr, aux_mid, aux_hr
+        return lr, hr, hr_mask, aux_lr, aux_mid, aux_hr, water_mask
 
 
 class RandomRotation90:
     def __call__(self, lr, hr, hr_mask,
-                 aux_lr=None, aux_mid=None, aux_hr=None):
+                 aux_lr=None, aux_mid=None, aux_hr=None, water_mask=None):
 
         k = random.randint(0, 3)
         if k == 0:
-            return lr, hr, hr_mask, aux_lr, aux_mid, aux_hr
+            return lr, hr, hr_mask, aux_lr, aux_mid, aux_hr, water_mask
 
-        lr = np.rot90(lr, k).copy()
-        hr = np.rot90(hr, k).copy()
-        hr_mask = np.rot90(hr_mask, k).copy()
+        # Explicitly rotate on the last two spatial axes (-2, -1) to support multi-channel arrays cleanly
+        lr = np.rot90(lr, k, axes=(-2, -1)).copy()
+        hr = np.rot90(hr, k, axes=(-2, -1)).copy()
+        hr_mask = np.rot90(hr_mask, k, axes=(-2, -1)).copy()
 
+        if water_mask is not None:
+            water_mask = np.rot90(water_mask, k, axes=(-2, -1)).copy()
         if aux_lr is not None:
-            aux_lr = np.rot90(aux_lr, k, axes=(1, 2)).copy()
+            aux_lr = np.rot90(aux_lr, k, axes=(-2, -1)).copy()
         if aux_mid is not None:
-            aux_mid = np.rot90(aux_mid, k, axes=(1, 2)).copy()
+            aux_mid = np.rot90(aux_mid, k, axes=(-2, -1)).copy()
         if aux_hr is not None:
-            aux_hr = np.rot90(aux_hr, k, axes=(1, 2)).copy()
+            aux_hr = np.rot90(aux_hr, k, axes=(-2, -1)).copy()
 
-        return lr, hr, hr_mask, aux_lr, aux_mid, aux_hr
+        return lr, hr, hr_mask, aux_lr, aux_mid, aux_hr, water_mask
 
 
 class TIRNoise:
@@ -83,14 +89,14 @@ class TIRNoise:
         self.p = p
 
     def __call__(self, lr, hr, hr_mask,
-                 aux_lr=None, aux_mid=None, aux_hr=None):
+                 aux_lr=None, aux_mid=None, aux_hr=None, water_mask=None):
 
         if random.random() < self.p:
             multiplier = random.uniform(0.5, 1.5)
             noise = np.random.randn(*lr.shape).astype(np.float32) * (self.std * multiplier)
             lr = lr + noise
 
-        return lr, hr, hr_mask, aux_lr, aux_mid, aux_hr
+        return lr, hr, hr_mask, aux_lr, aux_mid, aux_hr, water_mask
 
 
 class BlurAugment:
@@ -98,38 +104,35 @@ class BlurAugment:
         self.sigma_range = sigma_range
 
     def __call__(self, lr, hr, hr_mask,
-                 aux_lr=None, aux_mid=None, aux_hr=None):
+                 aux_lr=None, aux_mid=None, aux_hr=None, water_mask=None):
 
         if random.random() > 0.5:
             sig = random.uniform(*self.sigma_range)
 
             if lr.ndim == 3:
+                # Apply blur only along spatial dimensions, ignoring channel dimension (index 0)
                 lr = gaussian_filter(lr, sigma=(0, sig, sig))
             else:
                 lr = gaussian_filter(lr, sigma=sig)
 
-        return lr, hr, hr_mask, aux_lr, aux_mid, aux_hr
+        return lr, hr, hr_mask, aux_lr, aux_mid, aux_hr, water_mask
 
 
 class Compose:
     def __init__(self, transforms):
         self.transforms = transforms
 
-    def __call__(self, lr, hr, hr_mask, aux_lr=None, aux_mid=None, aux_hr=None):
+    def __call__(self, lr, hr, hr_mask, aux_lr=None, aux_mid=None, aux_hr=None, water_mask=None):
 
         for t in self.transforms:
-            lr, hr, hr_mask, aux_lr, aux_mid, aux_hr = t(
-                lr, hr, hr_mask, aux_lr, aux_mid, aux_hr
+            lr, hr, hr_mask, aux_lr, aux_mid, aux_hr, water_mask = t(
+                lr, hr, hr_mask, aux_lr, aux_mid, aux_hr, water_mask
             )
 
-        return lr, hr, hr_mask, aux_lr, aux_mid, aux_hr
+        return lr, hr, hr_mask, aux_lr, aux_mid, aux_hr, water_mask
 
 
 def train_transforms():
-    """
-    Standard spatial augmentations 
-    Safe for SISR — all transforms preserve HR/LR spatial correspondence.
-    """
     return Compose([
         RandomHorizontalFlip(p=0.5),
         RandomVerticalFlip(p=0.5),
@@ -137,5 +140,3 @@ def train_transforms():
         TIRNoise(std=0.01, p=0.5),
         BlurAugment(sigma_range=(0.5, 1.5)),
     ])
-
-

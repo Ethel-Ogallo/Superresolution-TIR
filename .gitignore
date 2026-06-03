@@ -25,3 +25,4 @@ __pycache__/
 slurm-*.out
 
 stuff.txt
+stuff_copy.txt

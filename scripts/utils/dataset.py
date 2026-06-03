@@ -1,28 +1,39 @@
 """
 dataset.py — SR Dataset for TIR Super-Resolution
 
-Loads:
-  - LR TIR patch          (normalized)
-  - HR TIR patch          (normalized)
-  - HR valid mask         (1 where HR is not NaN)
-  - aux_lr                (20ch aux at LR resolution, direct input)
-  - aux_mid               (20ch aux at 128px, SPADE mid conditioning)
-  - aux_hr                (20ch aux at 256px, SPADE HR conditioning)
-  - water_mask            (1 where pixel is water/river)
-  - lr_time               (LR acquisition hour, decimal float e.g. 10.37)
-  - time_gap_hours        (abs hour difference between LR and HR acquisition)
-  - date_gap_days         (calendar day difference between LR and HR)
+Loads per-patch data for a 4× SR task on thermal infrared (TIR) imagery
+of the Rhône river system.
 
-Time fields are used ONLY in the loss function (time-aware gradient loss).
-They are not fed into the model.
+What each field contains:
+─────────────────────────────────────────────────────────────────────────────
+lr          [1, 64,  64]   LR TIR patch, z-score normalised
+hr          [1, 256, 256]  HR TIR patch, z-score normalised
+hr_mask     [1, 256, 256]  1 where HR pixel is valid (not NaN), 0 elsewhere
+aux_lr      [20, 64,  64]  Aux data at LR resolution  — direct model input
+aux_mid     [20, 128, 128] Aux data at 128px          — SPADE mid conditioning
+aux_hr      [20, 256, 256] Aux data at 256px          — SPADE HR conditioning
+water_mask  [1,  256, 256] 1 where pixel is water/river (optional)
+
+Time fields (scalars, used in model input AND loss):
+─────────────────────────────────────────────────────────────────────────────
+lr_time          float   LR acquisition hour (decimal, e.g. 10.37 = 10h22m)
+time_gap_hours   float   |hr_time  - lr_time|  in hours
+date_gap_days    float   |hr_date  - lr_date|  in calendar days
+
+Time fields are loaded as tensors but used in two ways:
+    1. Model input  : tiled spatially and concatenated as channels 22-24
+                      (lr_time/24, time_gap_hours/24, date_gap_days/365)
+    2. Loss weight  : passed as scalars to combined_loss to modulate
+                      the gradient loss weight (professor's formula)
 
 Aux channel layout (20ch, fixed at patch creation):
-  [0:5]  spectral bands 1-5   continuous [0, 1]
-  [5]    NDVI                 continuous [-1, 1]
-  [6]    NDWI                 continuous [-1, 1]
-  [7]    NDMI                 continuous [-1, 1]
-  [8:19] LULC one-hot (11cls) binary     {0, 1}
-  [19]   DEM                  continuous [0, 1]
+─────────────────────────────────────────────────────────────────────────────
+[0:5]   spectral bands 1–5    continuous  [0, 1]
+[5]     NDVI                  continuous  [-1, 1]
+[6]     NDWI                  continuous  [-1, 1]
+[7]     NDMI                  continuous  [-1, 1]
+[8:19]  LULC one-hot (11cls)  binary      {0, 1}
+[19]    DEM                   continuous  [0, 1]
 """
 
 import json
@@ -33,28 +44,38 @@ from pathlib import Path
 
 
 class SRDataset(Dataset):
-
     def __init__(
         self,
-        split,
-        patches_dir,
-        stats_path,
-        use_water_mask=False,
-        use_aux=True,
-        aux_dir=None,
-        transform=None,
-        repeat_channels=False,
+        split: str,
+        patches_dir: str,
+        stats_path: str,
+        use_water_mask: bool = True,
+        use_aux: bool        = True,
+        aux_dir: str         = None,
+        transform            = None,
     ):
-        self.split           = split
-        self.patches_dir     = Path(patches_dir)
-        self.transform       = transform
-        self.repeat_channels = repeat_channels
-        self.use_water_mask  = use_water_mask
-        self.use_aux         = use_aux
+        """
+        Args:
+            split        : "train", "val", or "test"
+            patches_dir  : root directory containing split subdirs + metadata.json
+            stats_path   : path to stats.json (mean/std for LR and HR)
+            use_water_mask: whether to load water masks
+            use_aux      : whether to load aux channels
+            aux_dir      : path to LR-resolution aux folder.
+                           Mid (128px) and HR (256px) aux are expected as
+                           siblings named AUX_SPADE_MID and AUX_SPADE_HR.
+            transform    : optional augmentation callable
+        """
+        self.split          = split
+        self.patches_dir    = Path(patches_dir)
+        self.transform      = transform
+        self.use_water_mask = use_water_mask
+        self.use_aux        = use_aux
 
-        # ── AUX PATHS ─────────────────────────────────────────
-        # aux_dir points to the LR-resolution aux folder.
-        # Mid and HR SPADE aux are siblings of that folder.
+        # ── Aux directory layout ──────────────────────────────────────────────
+        # aux_lr  — same resolution as LR input (64px)   — fed into model input
+        # aux_mid — 128px                                — SPADE mid stage
+        # aux_hr  — 256px                                — SPADE HR stage
         if aux_dir is not None:
             base = Path(aux_dir)
             self.aux_lr_dir  = base
@@ -65,114 +86,93 @@ class SRDataset(Dataset):
             self.aux_mid_dir = None
             self.aux_hr_dir  = None
 
-        # ── NORMALIZATION STATS ───────────────────────────────
+        # ── Normalisation statistics ──────────────────────────────────────────
         with open(stats_path) as f:
             stats = json.load(f)
-
         self.hr_mean = stats["hr"]["mean"]
         self.hr_std  = stats["hr"]["std"]
         self.lr_mean = stats["lr"]["mean"]
         self.lr_std  = stats["lr"]["std"]
 
-        # ── METADATA ─────────────────────────────────────────
-        # Loaded once at init — used in __getitem__ for time fields.
-        # metadata.json lives at the root of patches_dir.
+        # ── Per-patch time metadata ───────────────────────────────────────────
+        # metadata.json stores lr_time, time_gap_hours, date_gap_days per tile.
+        # Loaded once at init — accessed per sample in __getitem__.
         metadata_path = self.patches_dir / "metadata.json"
         with open(metadata_path) as f:
             self.metadata = json.load(f)
 
-        # ── MAIN PATCH PATHS ──────────────────────────────────
+        # ── Patch file list ───────────────────────────────────────────────────
         self.hr_dir = self.patches_dir / split / "HR"
         self.lr_dir = self.patches_dir / split / "LR"
         self.wm_dir = self.patches_dir / split / "WM"
+        self.files  = sorted([f.name for f in self.hr_dir.glob("*.npy")])
 
-        self.files = sorted([f.name for f in self.hr_dir.glob("*.npy")])
-
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.files)
 
-    def __getitem__(self, idx):
-        fname = self.files[idx]
+    def __getitem__(self, idx: int) -> dict:
+            fname = self.files[idx]
 
-        # ── LR / HR ───────────────────────────────────────────
-        lr = np.load(self.lr_dir / fname).astype(np.float32)
-        hr = np.load(self.hr_dir / fname).astype(np.float32)
+            # 1. ── Load and Prep LR / HR patches ──────────────────────────────────
+            lr = np.load(self.lr_dir / fname).astype(np.float32)
+            hr = np.load(self.hr_dir / fname).astype(np.float32)
 
-        # Valid pixel masks (1 where not NaN)
-        hr_mask = np.isfinite(hr).astype(np.float32)
-        lr_mask = np.isfinite(lr).astype(np.float32)
+            hr_mask = np.isfinite(hr).astype(np.float32)
+            lr_mask = np.isfinite(lr).astype(np.float32)
 
-        # Fill NaN with mean before normalizing
-        hr = np.where(hr_mask, hr, self.hr_mean)
-        lr = np.where(lr_mask, lr, self.lr_mean)
+            hr = np.where(hr_mask, hr, self.hr_mean)
+            lr = np.where(lr_mask, lr, self.lr_mean)
 
-        # Normalize to zero mean unit variance
-        hr = (hr - self.hr_mean) / self.hr_std
-        lr = (lr - self.lr_mean) / self.lr_std
+            hr = (hr - self.hr_mean) / self.hr_std
+            lr = (lr - self.lr_mean) / self.lr_std
 
-        # ── AUX (DIRECT INPUT + SPADE CONDITIONING) ───────────
-        aux_lr  = None
-        aux_mid = None
-        aux_hr  = None
+            # 2. ── Load Aux data ──────────────────────────────────────────────────
+            aux_lr  = None
+            aux_mid = None
+            aux_hr  = None
+            if self.use_aux and self.aux_lr_dir is not None:
+                aux_lr  = np.load(self.aux_lr_dir  / fname).astype(np.float32)
+                aux_mid = np.load(self.aux_mid_dir / fname).astype(np.float32)
+                aux_hr  = np.load(self.aux_hr_dir  / fname).astype(np.float32)
 
-        if self.use_aux and self.aux_lr_dir is not None:
-            aux_lr  = np.load(self.aux_lr_dir  / fname).astype(np.float32)
-            aux_mid = np.load(self.aux_mid_dir / fname).astype(np.float32)
-            aux_hr  = np.load(self.aux_hr_dir  / fname).astype(np.float32)
+            # 3. ── Load Water Mask ────────────────────────────────────────────────
+            wm = np.load(self.wm_dir / fname).astype(np.float32)
 
-        # ── AUGMENTATION ──────────────────────────────────────
-        if self.transform:
-            lr, hr, hr_mask, aux_lr, aux_mid, aux_hr = self.transform(
-                lr, hr, hr_mask, aux_lr, aux_mid, aux_hr
+            # 4. ── Augmentation  ──
+            if self.transform:
+                lr, hr, hr_mask, aux_lr, aux_mid, aux_hr, wm = self.transform(
+                    lr, hr, hr_mask, aux_lr, aux_mid, aux_hr, wm
+                )
+
+            # 5. ── Convert EVERYTHING to Tensors & Build Sample Dict ─────────────
+            sample = {
+                "lr":                 torch.from_numpy(lr).float()[None],        # [1, 64,  64]
+                "hr":                 torch.from_numpy(hr).float()[None],        # [1, 256, 256]
+                "hr_mask":            torch.from_numpy(hr_mask).float()[None],   # [1, 256, 256]
+                "water_mask":         torch.from_numpy(wm).float()[None],        # [1, 256, 256]
+                "fname":              fname,
+            }
+
+            if aux_lr is not None:
+                sample["aux_lr"]  = torch.from_numpy(aux_lr).float()   # [20, 64,  64]
+                sample["aux_mid"] = torch.from_numpy(aux_mid).float()  # [20, 128, 128]
+                sample["aux_hr"]  = torch.from_numpy(aux_hr).float()   # [20, 256, 256]
+
+            # 6. ── Time metadata ─────────────────────────────────────────────────
+            key  = Path(fname).stem
+            meta = self.metadata.get(key, {})
+
+            sample["lr_time"] = torch.tensor(
+                float(meta.get("lr_time", 10.0)),
+                dtype=torch.float32,
+            )
+            sample["time_gap_hours"] = torch.tensor(
+                float(meta.get("time_gap_hours", 0.0)),
+                dtype=torch.float32,
+            )
+            sample["date_gap_days"] = torch.tensor(
+                float(meta.get("date_gap_days", 0.0)),
+                dtype=torch.float32,
             )
 
-        # ── TO TENSOR ─────────────────────────────────────────
-        # LR and HR are single-channel — add channel dim
-        lr      = torch.from_numpy(lr).float()[None]       # [1, H, W]
-        hr      = torch.from_numpy(hr).float()[None]       # [1, H, W]
-        hr_mask = torch.from_numpy(hr_mask).float()[None]  # [1, H, W]
-
-        # ── BASE SAMPLE ───────────────────────────────────────
-        sample = {
-            "lr":      lr,
-            "hr":      hr,
-            "hr_mask": hr_mask,
-            "fname":   fname,
-        }
-
-        # ── AUX TENSORS ───────────────────────────────────────
-        # aux_lr:  [20, 64,  64]  — concatenated with LR as direct input
-        # aux_mid: [20, 128, 128] — conditions SPADE at 128px
-        # aux_hr:  [20, 256, 256] — conditions SPADE at 256px
-        if aux_lr is not None:
-            sample["aux_lr"]  = torch.from_numpy(aux_lr).float()
-            sample["aux_mid"] = torch.from_numpy(aux_mid).float()
-            sample["aux_hr"]  = torch.from_numpy(aux_hr).float()
-
-        # ── WATER MASK ────────────────────────────────────────
-        if self.use_water_mask:
-            wm = np.load(self.wm_dir / fname).astype(np.float32)
-            sample["water_mask"] = torch.from_numpy(wm).float()[None]
-
-        # ── TIME METADATA (for time-aware gradient loss) ──────
-        # Loaded from metadata.json, not fed into the model.
-        # Used only in combined_loss to modulate lambda_grad.
-        # Fallback values used if tile is missing from metadata
-        # (should not happen — all tiles are in metadata.json).
-        key  = Path(fname).stem   # tile name without .npy
-        meta = self.metadata.get(key, {})
-
-        sample["lr_time"] = torch.tensor(
-            float(meta.get("lr_time", 10.0)),
-            dtype=torch.float32,
-        )
-        sample["time_gap_hours"] = torch.tensor(
-            float(meta.get("time_gap_hours", 0.0)),
-            dtype=torch.float32,
-        )
-        sample["date_gap_days"] = torch.tensor(
-            float(meta.get("date_gap_days", 0)),
-            dtype=torch.float32,
-        )
-
-        return sample
+            return sample
