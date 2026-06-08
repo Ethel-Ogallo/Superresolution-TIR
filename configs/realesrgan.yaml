@@ -6,4 +6,3 @@ lambda_perceptual:   1.0
 lambda_adversarial:  0.1
 d_lr_scale:          1.0
 precision:           "bf16-mixed"
-

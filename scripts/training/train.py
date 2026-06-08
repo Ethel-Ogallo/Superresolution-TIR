@@ -31,7 +31,7 @@ PATCHES_DIR = BASE / "data/processed/patches"
 CONFIGS_DIR = BASE / "configs"
 STATS_PATH = PATCHES_DIR / "stats.json"
 PRETRAINED = BASE / "data/pretrained"
-CKPT_DIR = BASE / "checkpoints/dev_gan"
+CKPT_DIR = BASE / "checkpoints/gan_v2"
 CKPT_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -62,7 +62,7 @@ def build_model(cfg, stats, args, aux_chans):
         pretrained_d_path=str(PRETRAINED / "RealESRGAN_discriminator_x4.pth"),
         learning_rate=args.lr,
         aux_chans=aux_chans,
-        # Direct clean mappings to match model definition:
+        use_spade=args.use_spade,  
         lambda_nw=args.lambda_nw,
         lambda_w=args.lambda_w,
         lambda_g=args.lambda_g,
@@ -76,120 +76,93 @@ def build_model(cfg, stats, args, aux_chans):
 
 def run(args):
     set_seed(args.seed)
-
-    print("\n" + "=" * 60)
-    print("RealESRGAN + SPADE Training: Targeted River Heterogeneity Setup")
-    print("=" * 60)
+    print(f"[START] Training {args.run_name} | SPADE: {args.use_spade}")
 
     stats = json.load(open(STATS_PATH))
     cfg = load_config("realesrgan")
     precision = cfg.get("precision", "bf16-mixed")
 
-    # --------------------------------------------------------
-    # DATASETS: Completely clean and aligned
-    # --------------------------------------------------------
-    train_ds = SRDataset(
-        split="train",
-        patches_dir=PATCHES_DIR,
-        stats_path=STATS_PATH,
-        use_aux=True,
-        use_water_mask=True,                
-        aux_dir=str(PATCHES_DIR / "train" / "AUX"), 
-        transform=train_transforms(),
-    )
-
-    val_ds = SRDataset(
-        split="val",
-        patches_dir=PATCHES_DIR,
-        stats_path=STATS_PATH,
-        use_aux=True,
-        use_water_mask=True,                
-        aux_dir=str(PATCHES_DIR / "val" / "AUX"),
-        transform=None,
-    )
+    # Initialize Datasets
+    train_ds = SRDataset(split="train", 
+                         patches_dir=PATCHES_DIR, 
+                         stats_path=STATS_PATH, 
+                         use_aux=True, 
+                         use_water_mask=True, 
+                         aux_dir=str(PATCHES_DIR / "train" / "AUX"), 
+                         transform=train_transforms()
+                         )
+    
+    val_ds = SRDataset(split="val", 
+                       patches_dir=PATCHES_DIR, 
+                       stats_path=STATS_PATH, 
+                       use_aux=True, 
+                       use_water_mask=True, 
+                       aux_dir=str(PATCHES_DIR / "val" / "AUX"), 
+                       transform=None)
 
     loader_kw = dict(num_workers=args.num_workers, pin_memory=True)
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, **loader_kw)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, **loader_kw)
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, 
+                              shuffle=True, **loader_kw)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, 
+                            shuffle=False, **loader_kw)
 
     aux_chans = train_ds[0]["aux_lr"].shape[0]
-    print(f"[INFO] AUX channels: {aux_chans}")
-
-    # --------------------------------------------------------
-    # MODEL BUILD
-    # --------------------------------------------------------
+    
+    # Build Model
     model = build_model(cfg, stats, args, aux_chans)
 
-    # --------------------------------------------------------
-    # WANDB INITIALIZATION
-    # --------------------------------------------------------
-    run_name = args.run_name or f"realesrgan_river_eval"
-    master_config = {}
-    master_config.update(cfg)
-    master_config.update(vars(args))
+    run_name = args.run_name or f"exp_{int(time.time())}"
+    logger = WandbLogger(project=args.project, 
+                         name=run_name, 
+                         group=args.group, 
+                         config={**cfg, **vars(args)})
 
-    logger = WandbLogger(
-        project=args.project,
-        name=run_name,
-        group=args.group,
-        config=master_config,  
-    )
+    ckpt = ModelCheckpoint(dirpath=CKPT_DIR, 
+                           filename=run_name + "_{val_water_mae:.4f}",
+                           monitor="val/water_mae", 
+                           mode="min", 
+                           save_top_k=1)
 
-    # --------------------------------------------------------
-    # THESIS ALIGNED CHECKPOINTS: Monitor Water Temperature Error
-    # --------------------------------------------------------
-    ckpt = ModelCheckpoint(
-        dirpath=CKPT_DIR,
-        filename=run_name + "_{epoch:02d}_{val_water_mae:.4f}",
-        monitor="val/water_mae",  # Save models that yield the lowest stream Celsius error
-        mode="min",               # Lower error = better
-        save_top_k=1,
-    )
+    callbacks = [ckpt, 
+                 EarlyStopping(monitor="val/water_mae", 
+                               mode="min", 
+                               patience=args.patience),
+                 LearningRateMonitor(logging_interval="epoch")]
 
-    callbacks = [
-        ckpt,
-        EarlyStopping(monitor="val/water_mae", mode="min", patience=args.patience),
-        LearningRateMonitor(logging_interval="epoch"),
-    ]
+    # ADJUSTMENT: Log frequency set to 10 steps to sync cleanly with epoch boundaries
+    trainer = Trainer(max_epochs=args.max_epochs, 
+                      accelerator="gpu", 
+                      devices=1, 
+                      precision=precision, 
+                      logger=logger, 
+                      callbacks=callbacks, 
+                      log_every_n_steps=10) 
 
-    # --------------------------------------------------------
-    # TRAINER EXECUTION
-    # --------------------------------------------------------
-    trainer = Trainer(
-        max_epochs=args.max_epochs,
-        accelerator="gpu",
-        devices=1,
-        precision=precision,
-        logger=logger,
-        callbacks=callbacks,
-        log_every_n_steps=10,
-    )
-
+    print(f"[INFO] Initialized Trainer: {precision} precision, {aux_chans} aux channels")
+    
     t0 = time.time()
     trainer.fit(model, train_loader, val_loader)
-    print(f"\nTraining time: {time.time() - t0:.1f}s")
-    print(f"Best Model Path: {ckpt.best_model_path}")
-
+    
+    print(f"[FINISH] Training completed in {(time.time() - t0)/60:.2f}m")
+    print(f"[BEST] {ckpt.best_model_path}")
+    
     wandb.finish()
 
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--strategy", default="spade")
+    p.add_argument("--use_spade", type=lambda x: (str(x).lower() == 'true'), default=False,
+                   help="Toggle to activate or deactivate SPADE layers entirely")
     p.add_argument("--lr", type=float, default=1e-4)
-    p.add_argument("--batch_size", type=int, default=2)
+    p.add_argument("--batch_size", type=int, default=4)
     p.add_argument("--max_epochs", type=int, default=50)
     p.add_argument("--patience", type=int, default=10)
     p.add_argument("--num_workers", type=int, default=4)
     p.add_argument("--seed", type=int, default=42)
     
-    p.add_argument("--lambda_nw", type=float, default=1.0, 
-                   help="L1 multiplier for land terrain pixels")
-    p.add_argument("--lambda_w", type=float, default=1.0, 
-                   help="L1 multiplier for water channel pixels")
-    p.add_argument("--lambda_g", type=float, default=0.1, 
-                   help="Multiplier for Sobel spatial boundary gradients")
-    
+    p.add_argument("--lambda_nw", type=float, default=1.0)
+    p.add_argument("--lambda_w", type=float, default=1.0)
+    p.add_argument("--lambda_g", type=float, default=0.1)
     p.add_argument("--lambda_adversarial", type=float, default=0.1) 
     p.add_argument("--lambda_perceptual", type=float, default=1.0)
 

@@ -1,0 +1,174 @@
+# sweep sans spade
+# configs/sweep.yaml
+program: scripts/training/train.py
+project: TIR_SISR_v2   
+method: bayes       
+metric:
+  name: val/water_mae
+  goal: minimize    
+
+parameters:
+  # --- Fixed Arguments for Training Stability ---
+  lr:
+    value: 0.0001
+  batch_size:
+    value: 4
+  max_epochs:
+    value: 80
+  patience:
+    value: 15
+  num_workers:
+    value: 4
+  seed:
+    value: 42
+  use_spade:
+    value: false     
+  group:
+    value: "sweep_all_v2"
+
+  # --- Water target ---
+  lambda_w:
+    min: 1.0
+    max: 4.0      # Gives total freedom to prioritize the narrow river channels
+  lambda_nw:
+    min: 0.01
+    max: 0.8      # Allows the model to find the right background balance
+
+  # --- Deterministic Structural Edge Force ---
+  lambda_g:
+    min: 0.1
+    max: 2.0      # Centered beautifully around the paper's gamma = 1.0
+
+  # --- Generative & Perceptual Priors (as per STGAN paper) ---
+  lambda_adversarial:
+    min: 0.0001
+    max: 0.005    # Safely brackets the paper's beta = 0.001 near the upper middle
+  lambda_perceptual:
+    min: 0.0
+    max: 0.1      # Caps exactly at the paper's alpha = 0.1, including 0.0 as a baseline
+
+
+
+
+# configs/sweep_bayes.yaml
+# program: scripts/training/train.py
+# project: TIR_SISR
+# method: bayes       # Tells W&B to use Bayesian Optimization
+# metric:
+#   name: val/water_mae
+#   goal: minimize
+# parameters:
+#   # Fixed arguments for training stability
+#   lr:
+#     value: 0.0001
+#   batch_size:
+#     value: 4
+#   max_epochs:
+#     value: 80
+#   patience:
+#     value: 15
+#   num_workers:
+#     value: 4
+#   lambda_g:
+#     value: 0.0
+#   lambda_perceptual:
+#     value: 0.0
+#   lambda_adversarial:
+#     value: 0.0
+#   group:
+#     value: "water_nonwater_focus_sweep"
+
+#   # The targeted hyperparameter search boundaries
+#   lambda_w:
+#     min: 1.0
+#     max: 2.5
+#   lambda_nw:
+#     min: 0.1
+#     max: 0.6
+
+# configs/sweep_bayes.yaml
+# program: scripts/training/train.py
+# project: TIR_SISR   # Moved to top level to prevent agent parameter injection issues
+# method: bayes       # Uses Gaussian Processes to intelligently guess the next best pair
+# metric:
+#   name: val/water_psnr
+#   goal: maximize    # Targeting peak structural sharpness
+
+# parameters:
+#   # --- Fixed Structural Parameters (Best Values from Sweep 1) ---
+#   lambda_nw:
+#     value: 0.119942457596896
+#   lambda_w:
+#     value: 1.669200900148733
+
+#   # --- The Targeted Gradient/GAN Optimization Ranges ---
+#   lambda_g:
+#     min: 0.1
+#     max: 2.0
+#   lambda_adversarial:
+#     min: 0.0
+#     max: 0.05
+
+#   # --- Fixed Arguments for Training Stability ---
+#   lr:
+#     value: 0.0001
+#   batch_size:
+#     value: 4
+#   max_epochs:
+#     value: 80
+#   patience:
+#     value: 15
+#   num_workers:
+#     value: 4
+#   seed:
+#     value: 42
+#   lambda_perceptual:
+#     value: 0.0      
+
+#   # --- Metadata & Logging Arguments ---
+#   group:
+#     value: "gradient_sweep"
+
+# configs/sweep_bayes.yaml
+# program: scripts/training/train.py
+# project: TIR_SISR   
+# method: bayes       # Gaussian Processes will find the optimal perceptual weight efficiently
+# metric:
+#   name: val/water_psnr
+#   goal: maximize    
+
+# parameters:
+#   # --- Fixed Structural Parameters (From Sweep 1 Best Checkpoint) ---
+#   lambda_nw:
+#     value: 0.119942457596896
+#   lambda_w:
+#     value: 1.669200900148733
+
+#   # --- Locked Gradient/GAN Baselines (Set to your exact best values from Sweep 1) ---
+#   lambda_g:
+#     value: 1.492371391996919       
+#   lambda_adversarial:
+#     value: 0.0319377728896036     
+
+#   # --- The Isolated Perceptual Search Range ---
+#   lambda_perceptual:
+#     min: 0.01         # Start with a subtle hint of feature reconstruction
+#     max: 1.0          # Allow it to scale up to match or influence the pixel gradient
+
+#   # --- Fixed Arguments for Training Stability ---
+#   lr:
+#     value: 0.0001
+#   batch_size:
+#     value: 4
+#   max_epochs:
+#     value: 80
+#   patience:
+#     value: 15
+#   num_workers:
+#     value: 4
+#   seed:
+#     value: 42
+
+#   # --- Metadata & Logging Arguments ---
+#   group:
+#     value: "perceptual_sweep"

@@ -1,8 +1,8 @@
 # ----------------------------
 # AUX SPADE PATCHING SCRIPT
 # Generates:
-#   AUX_SPADE_HR  -> (21,256,256)
-#   AUX_SPADE_MID -> (21,128,128)
+#   AUX_SPADE_HR  -> (20,256,256)
+#   AUX_SPADE_MID -> (20,128,128)
 # ----------------------------
 
 import json
