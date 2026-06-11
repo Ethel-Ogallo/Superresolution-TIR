@@ -1,4 +1,4 @@
-# scripts/training/train_realesrgan_aux.py
+# scripts/training/train.py
 
 import argparse
 import json
@@ -55,12 +55,14 @@ def build_model(cfg, stats, args, aux_chans):
 
     arch.pop("lambda_perceptual", None)
     arch.pop("lambda_adversarial", None)
+    arch.pop("d_lr_scale", None)
 
     return RealESRGANModule(
         **arch,
         pretrained_path=str(PRETRAINED / "RealESRGAN_generator_x4.pth"),
         pretrained_d_path=str(PRETRAINED / "RealESRGAN_discriminator_x4.pth"),
         learning_rate=args.lr,
+        d_lr_scale=args.d_lr_scale,
         aux_chans=aux_chans,
         use_spade=args.use_spade,  
         lambda_nw=args.lambda_nw,
@@ -76,8 +78,8 @@ def build_model(cfg, stats, args, aux_chans):
 
 def run(args):
     set_seed(args.seed)
-    print(f"[START] Training {args.run_name} | SPADE: {args.use_spade}")
-
+    
+    run_name = args.run_name or f"exp_{int(time.time())}"
     stats = json.load(open(STATS_PATH))
     cfg = load_config("realesrgan")
     precision = cfg.get("precision", "bf16-mixed")
@@ -106,22 +108,23 @@ def run(args):
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, 
                             shuffle=False, **loader_kw)
 
-    aux_chans = train_ds[0]["aux_lr"].shape[0]
+    # Get auxiliary channel count from the dataset
+    raw_aux_chans = train_ds[0]["aux_lr"].shape[0]
     
     # Build Model
-    model = build_model(cfg, stats, args, aux_chans)
+    model = build_model(cfg, stats, args, raw_aux_chans)
 
-    run_name = args.run_name or f"exp_{int(time.time())}"
     logger = WandbLogger(project=args.project, 
                          name=run_name, 
                          group=args.group, 
                          config={**cfg, **vars(args)})
 
     ckpt = ModelCheckpoint(dirpath=CKPT_DIR, 
-                           filename=run_name + "_{val_water_mae:.4f}",
+                           filename=run_name + "_epoch={epoch:02d}_val_water_mae={val/water_mae:.4f}",
                            monitor="val/water_mae", 
                            mode="min", 
-                           save_top_k=1)
+                           save_top_k=1,
+                           auto_insert_metric_name=False)
 
     callbacks = [ckpt, 
                  EarlyStopping(monitor="val/water_mae", 
@@ -129,7 +132,6 @@ def run(args):
                                patience=args.patience),
                  LearningRateMonitor(logging_interval="epoch")]
 
-    # ADJUSTMENT: Log frequency set to 10 steps to sync cleanly with epoch boundaries
     trainer = Trainer(max_epochs=args.max_epochs, 
                       accelerator="gpu", 
                       devices=1, 
@@ -138,22 +140,20 @@ def run(args):
                       callbacks=callbacks, 
                       log_every_n_steps=10) 
 
-    print(f"[INFO] Initialized Trainer: {precision} precision, {aux_chans} aux channels")
+    print(f"[RUN] {run_name} | SPADE: {model.use_spade}")
     
     t0 = time.time()
     trainer.fit(model, train_loader, val_loader)
     
-    print(f"[FINISH] Training completed in {(time.time() - t0)/60:.2f}m")
-    print(f"[BEST] {ckpt.best_model_path}")
-    
+    print(f"[FINISH] Completed in {(time.time() - t0)/60:.2f}m | Best CKPT: {ckpt.best_model_path}")
     wandb.finish()
 
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--use_spade", type=lambda x: (str(x).lower() == 'true'), default=False,
-                   help="Toggle to activate or deactivate SPADE layers entirely")
+    p.add_argument("--use_spade", type=lambda x: (str(x).lower() == 'true'), default=False)
     p.add_argument("--lr", type=float, default=1e-4)
+    p.add_argument("--d_lr_scale", type=float, default=1.0)
     p.add_argument("--batch_size", type=int, default=4)
     p.add_argument("--max_epochs", type=int, default=50)
     p.add_argument("--patience", type=int, default=10)

@@ -19,24 +19,62 @@ def regional_masked_l1(sr, hr, target_mask):
     return err.sum() / torch.clamp(target_mask.sum(), min=1.0)
 
 
+# def gradient_loss(sr, hr, hr_mask):
+#     """
+#     Computes global structural edge error using 2D Sobel operators.
+#     Measures how sharp and aligned the riverbanks and geometric boundaries are.
+#     """
+#     # Outputs shape: [B, 1, 2, H, W] representing structural gradient components
+#     sr_g = _sobel(sr)
+#     hr_g = _sobel(hr)
+
+#     # Inwardly erode the image border slightly to eliminate harsh edge clipping artifacts
+#     mask_valid = (F.avg_pool2d(hr_mask, 3, 1, 1) > 0.99).float()
+#     mask_g = mask_valid.unsqueeze(2) # Broadened to channel broadcast smoothly
+
+#     err = torch.abs(sr_g - hr_g) * mask_g
+    
+#     # Scale denominator by 2.0 because each pixel has a horizontal and vertical derivative
+#     return err.sum() / torch.clamp(mask_g.sum() * 2.0, min=1.0)
 def gradient_loss(sr, hr, hr_mask):
     """
-    Computes global structural edge error using 2D Sobel operators.
-    Measures how sharp and aligned the riverbanks and geometric boundaries are.
+    PyTorch translation of tf.image.image_gradients() loss.
+    Computes the magnitude of pure pixel-to-pixel spatial gradients.
     """
-    # Outputs shape: [B, 1, 2, H, W] representing structural gradient components
-    sr_g = _sobel(sr)
-    hr_g = _sobel(hr)
+    # 1. Compute horizontal and vertical pixel-to-pixel differences
+    # sr_dx shape: [B, C, 256, 255] | sr_dy shape: [B, C, 255, 256]
+    sr_dx = sr[:, :, :, 1:] - sr[:, :, :, :-1]
+    sr_dy = sr[:, :, 1:, :] - sr[:, :, :-1, :]
 
-    # Inwardly erode the image border slightly to eliminate harsh edge clipping artifacts
+    hr_dx = hr[:, :, :, 1:] - hr[:, :, :, :-1]
+    hr_dy = hr[:, :, 1:, :] - hr[:, :, :-1, :]
+
+    # 2. Match the valid mask to the reduced dimensions from diffing
     mask_valid = (F.avg_pool2d(hr_mask, 3, 1, 1) > 0.99).float()
-    mask_g = mask_valid.unsqueeze(2) # Broadened to channel broadcast smoothly
+    mask_dx = mask_valid[:, :, :, :-1]
+    mask_dy = mask_valid[:, :, :-1, :]
 
-    err = torch.abs(sr_g - hr_g) * mask_g
-    
-    # Scale denominator by 2.0 because each pixel has a horizontal and vertical derivative
-    return err.sum() / torch.clamp(mask_g.sum() * 2.0, min=1.0)
+    # 3. Mask them independently first
+    sr_norm_x = sr_dx * mask_dx  # Shape: [B, C, 256, 255]
+    sr_norm_y = sr_dy * mask_dy  # Shape: [B, C, 255, 256]
+    hr_norm_x = hr_dx * mask_dx  # Shape: [B, C, 256, 255]
+    hr_norm_y = hr_dy * mask_dy  # Shape: [B, C, 255, 256]
 
+    # --- THE EDIT: Slice both arrays down to a shared 255x255 footprint ---
+    # Slice norm_x along height (dim 2) -> [B, C, 255, 255]
+    # Slice norm_y along width (dim 3)  -> [B, C, 255, 255]
+    sr_magnitude = torch.sqrt(
+        sr_norm_x[:, :, :-1, :] ** 2 + sr_norm_y[:, :, :, :-1] ** 2 + 1e-8
+    )
+    hr_magnitude = torch.sqrt(
+        hr_norm_x[:, :, :-1, :] ** 2 + hr_norm_y[:, :, :, :-1] ** 2 + 1e-8
+    )
+
+    # 4. Return the Mean Absolute Error between the two gradient fields
+    # Both magnitude tensors are now perfectly matched at [B, C, 255, 255]
+    loss = torch.abs(sr_magnitude - hr_magnitude)
+
+    return loss.mean()
 
 def time_grad_weight(time_gap_hours, 
                      date_gap_days, 

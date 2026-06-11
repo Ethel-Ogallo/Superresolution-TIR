@@ -5,17 +5,15 @@ Loads per-patch data for a 4× SR task on thermal infrared (TIR) imagery
 of the Rhône river system.
 
 What each field contains:
-─────────────────────────────────────────────────────────────────────────────
 lr          [1, 64,  64]   LR TIR patch, z-score normalised
 hr          [1, 256, 256]  HR TIR patch, z-score normalised
 hr_mask     [1, 256, 256]  1 where HR pixel is valid (not NaN), 0 elsewhere
 aux_lr      [20, 64,  64]  Aux data at LR resolution  — direct model input
 aux_mid     [20, 128, 128] Aux data at 128px          — SPADE mid conditioning
 aux_hr      [20, 256, 256] Aux data at 256px          — SPADE HR conditioning
-water_mask  [1,  256, 256] 1 where pixel is water/river (optional)
+water_mask  [1,  256, 256] 1 where pixel is water/river 
 
 Time fields (scalars, used in model input AND loss):
-─────────────────────────────────────────────────────────────────────────────
 lr_time          float   LR acquisition hour (decimal, e.g. 10.37 = 10h22m)
 time_gap_hours   float   |hr_time  - lr_time|  in hours
 date_gap_days    float   |hr_date  - lr_date|  in calendar days
@@ -24,10 +22,9 @@ Time fields are loaded as tensors but used in two ways:
     1. Model input  : tiled spatially and concatenated as channels 22-24
                       (lr_time/24, time_gap_hours/24, date_gap_days/365)
     2. Loss weight  : passed as scalars to combined_loss to modulate
-                      the gradient loss weight (professor's formula)
+                      the global loss weight.
 
 Aux channel layout (20ch, fixed at patch creation):
-─────────────────────────────────────────────────────────────────────────────
 [0:5]   spectral bands 1–5    continuous  [0, 1]
 [5]     NDVI                  continuous  [-1, 1]
 [6]     NDWI                  continuous  [-1, 1]

@@ -136,7 +136,6 @@ class RealESRGANModule(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         opt_g, opt_d = self.optimizers()
         
-        # Cleanly reset parameter memory spaces at the start of an accumulation window
         if batch_idx % self.accum_steps == 0:
             opt_g.zero_grad()
             opt_d.zero_grad()
@@ -144,7 +143,7 @@ class RealESRGANModule(pl.LightningModule):
         sr, hr = self(batch), batch["hr"]
         sr_phys, hr_phys = self.denormalize(sr), self.denormalize(hr[:, 0:1])
 
-        # Compute physical constraints (Water MAE, Non-Water MAE, Edge Spatial Gradients)
+        # 1. Physics loss works on valid pixels 
         loss_dict = combined_loss(sr_phys, 
                                   hr_phys, 
                                   batch["hr_mask"], 
@@ -156,19 +155,23 @@ class RealESRGANModule(pl.LightningModule):
                                   batch["date_gap_days"].mean().item()
                                 )
         
-        # Pretrained models require 3 channels (RGB replication via .repeat)
-        percep = self.perceptual_loss(sr.repeat(1, 3, 1, 1), hr[:, 0:1].repeat(1, 3, 1, 1))[0] if self.perceptual_loss else sr.sum() * 0.0
+        # 2. Extractvalid pixels mask [B, 1, H, W]
+        valid_mask = batch["hr_mask"][:, 0:1].float()
+        
+        # 3. Apply mask to isolate the true data stream
+        sr_masked = sr * valid_mask
+        hr_masked = hr[:, 0:1] * valid_mask
+        
+        # 4. Structural Perceptual Loss (VGG) on valid pixels only
+        percep = self.perceptual_loss(sr_masked.repeat(1, 3, 1, 1), hr_masked.repeat(1, 3, 1, 1))[0] if self.perceptual_loss else sr.sum() * 0.0
         
         # -------Optimize Generator------
         self.toggle_optimizer(opt_g)
-        gan_g = self.gan_loss(self.net_d(sr.repeat(1, 3, 1, 1)), True, False)
+        gan_g = self.gan_loss(self.net_d(sr_masked.repeat(1, 3, 1, 1)), True, False)
         
-        # MATH FIX: Explicitly normalize total loss down by the size of the accumulation window.
-        # This keeps gradients scaled correctly for an effective batch size of 16.
         loss_g = (loss_dict["loss_total"] + percep + gan_g) / self.accum_steps
         self.manual_backward(loss_g)
         
-        # Only execute optimizer changes after the full accumulation loop finishes
         if (batch_idx + 1) % self.accum_steps == 0: 
             self.clip_gradients(opt_g, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
             opt_g.step()
@@ -176,14 +179,9 @@ class RealESRGANModule(pl.LightningModule):
 
         # --------Optimize Discriminator--------
         self.toggle_optimizer(opt_d)
+        loss_d = 0.5 * (self.gan_loss(self.net_d(hr_masked.repeat(1, 3, 1, 1)), True, True) + 
+                        self.gan_loss(self.net_d(sr_masked.detach().repeat(1, 3, 1, 1)), False, True))
         
-        # CONVERGENCE FIX: Added .detach() to the generated patches ('sr.detach()').
-        # This blocks backpropagation from leaking backward into the generator's layers 
-        # while the discriminator is updating its own parameters.
-        loss_d = 0.5 * (self.gan_loss(self.net_d(hr[:, 0:1].repeat(1, 3, 1, 1)), True, True) + 
-                        self.gan_loss(self.net_d(sr.detach().repeat(1, 3, 1, 1)), False, True))
-        
-        # MATH FIX: Explicitly scale discriminator loss by accumulation scale
         loss_d = loss_d / self.accum_steps
         self.manual_backward(loss_d)
         
@@ -192,10 +190,7 @@ class RealESRGANModule(pl.LightningModule):
             opt_d.step()
         self.untoggle_optimizer(opt_d)
 
-        # ----- Logs--------
-        # VISUAL FIX: `on_step=False` and `on_epoch=True` aggregates the steps.
-        # This averages out the per-step batch noise across each epoch, giving you clean trends.
-        # We multiply loss values back by self.accum_steps so the dashboard reflects real unscaled numbers.
+        # ----- Logs --------
         self.log_dict({
             "train/loss_g": loss_g * self.accum_steps, 
             "train/recon": loss_dict["loss_total"], 
@@ -216,6 +211,11 @@ class RealESRGANModule(pl.LightningModule):
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
         sr, hr = self(batch), batch["hr"]
+        valid_mask = batch["hr_mask"][:, 0:1].float()
+        
+        sr_masked = sr * valid_mask
+        hr_masked = hr[:, 0:1] * valid_mask
+
         loss_dict = combined_loss(self.denormalize(sr), 
                                   self.denormalize(hr[:, 0:1]), 
                                   batch["hr_mask"], 
@@ -225,12 +225,11 @@ class RealESRGANModule(pl.LightningModule):
                                   self.lambda_g
                                   )
         
-        val_percep = self.perceptual_loss(sr.repeat(1, 3, 1, 1), hr[:, 0:1].repeat(1, 3, 1, 1))[0] if self.perceptual_loss else 0.0
-        val_gan_g = self.gan_loss(self.net_d(sr.repeat(1, 3, 1, 1)), True, False)
-        val_gan_d = 0.5 * (self.gan_loss(self.net_d(hr[:, 0:1].repeat(1, 3, 1, 1)), True, True) + 
-                           self.gan_loss(self.net_d(sr.detach().repeat(1, 3, 1, 1)), False, True))
+        val_percep = self.perceptual_loss(sr_masked.repeat(1, 3, 1, 1), hr_masked.repeat(1, 3, 1, 1))[0] if self.perceptual_loss else 0.0
+        val_gan_g = self.gan_loss(self.net_d(sr_masked.repeat(1, 3, 1, 1)), True, False)
+        val_gan_d = 0.5 * (self.gan_loss(self.net_d(hr_masked.repeat(1, 3, 1, 1)), True, True) + 
+                           self.gan_loss(self.net_d(sr_masked.detach().repeat(1, 3, 1, 1)), False, True))
 
-        # Explicit validation epoch metrics configuration
         self.log_dict({
             "val/loss_g": loss_dict["loss_total"] + val_percep + val_gan_g, 
             "val/recon": loss_dict["loss_total"], 
@@ -252,7 +251,7 @@ class RealESRGANModule(pl.LightningModule):
                                   batch.get("water_mask"))
         
         self.log_dict({f"val/{k}": v for k, v in metrics.items() if v is not None}, on_step=False, on_epoch=True)
-
+    
     # -------------- Optimizer Configuration --------------
     def configure_optimizers(self):
         g_params = list(self.net_g.parameters()) + list(self.out_head.parameters())
