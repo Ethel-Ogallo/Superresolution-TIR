@@ -106,7 +106,7 @@ class RRDBNetWithSPADE(nn.Module):
     Wrapper around RRDBNet that injects SPADE at upsampling stages.
     Maintains a 100% plug-and-play surface with Lightning module.
     """
-    def __init__(self, rrdb_net, n_feats=64, seg_nc_mid=20, seg_nc_hr=20):
+    def __init__(self, rrdb_net, n_feats=64, seg_nc_mid=23, seg_nc_hr=23):
         super().__init__()
         self.net = rrdb_net
         self.spade_mid = SPADEResnetBlock(n_feats, n_feats, seg_nc_mid)

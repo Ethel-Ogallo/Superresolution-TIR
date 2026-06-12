@@ -34,7 +34,7 @@ class RealESRGANModule(pl.LightningModule):
         lambda_nw: float = 1.0,  
         lambda_w: float = 1.0,
         lambda_g: float = 0.1,  
-        aux_chans: int = 20,
+        aux_chans: int = 23,
         use_spade: bool = True,  # Controls architecture path: True for SPADE, False for Baseline
         **kwargs,
     ):
@@ -51,7 +51,7 @@ class RealESRGANModule(pl.LightningModule):
         self.lambda_g = lambda_g
         self.use_spade = use_spade
         self.aux_chans = aux_chans
-        self.total_in_ch = 1 + aux_chans + 3 # 1 (TIR) + Aux (20) + Time (3)
+        self.total_in_ch = 1 + aux_chans + 3 # 1 (TIR) + Aux (23) + Time (3)
         
         # KEY STABILITY: Virtual batch sizing multiplier
         self.accum_steps = 4

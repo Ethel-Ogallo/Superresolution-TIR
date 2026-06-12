@@ -36,6 +36,7 @@ def regional_masked_l1(sr, hr, target_mask):
     
 #     # Scale denominator by 2.0 because each pixel has a horizontal and vertical derivative
 #     return err.sum() / torch.clamp(mask_g.sum() * 2.0, min=1.0)
+
 def gradient_loss(sr, hr, hr_mask):
     """
     PyTorch translation of tf.image.image_gradients() loss.
@@ -96,7 +97,7 @@ def time_grad_weight(time_gap_hours,
 
 def combined_loss(
     sr,
-    hr,
+    hr, 
     hr_mask,
     water_mask,
     lambda_nw=1.0,      # Hyperparameter: Multiplier for Land Terrain
