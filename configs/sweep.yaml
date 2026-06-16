@@ -7,12 +7,6 @@ metric:
   name: val/water_mae
   goal: minimize    
 
-early_terminate:
-  type: hyperband
-  min_iter: 10        # don't kill runs before epoch 10
-  eta: 2              # aggressiveness — 2 or 3 is standard (3 = more aggressive)
-  s: 2                # number of brackets
-
 parameters:
   # --- Fixed Arguments for Training Stability ---
   lr:
@@ -31,21 +25,45 @@ parameters:
     value: false
   d_lr_scale:
     value: 1.0 
-  lambda_perceptual:
-    value: 0.791
-  lambda_adversarial:
-    value: 0.061
-  lambda_w:
-    value: 1.562
-  lambda_nw:
-    value: 0.353
+
   group:
-    value: "sweep_grad"
+    value: "sweep2_cosia"
          
   # --- Hyperparameters to Sweep ---
+parameters:
+  lambda_nw:
+    distribution: uniform
+    min: 0.5
+    max: 1.0
+
+  lambda_w:
+    distribution: uniform
+    min: 1.5
+    max: 3.0
+
   lambda_g:
+    distribution: uniform
+    min: 0.1
+    max: 0.4
+
+  lambda_perceptual:
     distribution: log_uniform_values
-    min: 0.7
-    max: 2.5      
-            
+    min: 0.3
+    max: 1.0
+
+  lambda_adversarial:
+    distribution: log_uniform_values
+    min: 0.02
+    max: 0.1
+
+
+
+  # lambda_perceptual:
+  #   value: 0.791
+  # lambda_adversarial:
+  #   value: 0.061
+  # lambda_w:
+  #   value: 1.562
+  # lambda_nw:
+  #   value: 0.353         
 

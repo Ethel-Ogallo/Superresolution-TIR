@@ -17,39 +17,89 @@ conda activate sisr
 cd /share/home/e2406751/Superresolution-TIR
 # mkdir -p logs checkpoints/gan_v2
 
-# # CLI
-# echo "Spade off with sobel spatial gradient:"
-# python -m scripts.training.train \
-#     --lr 1e-4 \
-#     --max_epochs 80 \
-#     --batch_size 4 \
-#     --patience 15 \
-#     --num_workers 4 \
-#     --lambda_nw 0.353 \
-#     --lambda_w 1.562 \
-#     --lambda_g 1.381 \
-#     --lambda_adversarial 0.061 \
-#     --lambda_perceptual 0.791 \
-#     --d_lr_scale 1.0 \
-#     --use_spade false \
-#     --run_name "exp6.1_loss" \
-#     --group "spade" \
-#     --project TIR_SISR_v2 \
-
-# echo "Spade on with sobel spatial gradient:"
+# CLI
+echo "SPADE OFF"
+echo "Running best hyperparameters:"
 python -m scripts.training.train \
     --lr 1e-4 \
-    --max_epochs 80 \
+    --max_epochs 150 \
     --batch_size 4 \
-    --patience 15 \
+    --patience 50 \
     --num_workers 4 \
-    --lambda_nw 0.353 \
-    --lambda_w 1.562 \
-    --lambda_g 1.381 \
-    --lambda_adversarial 0.061 \
-    --lambda_perceptual 0.791 \
+    --lambda_nw 0.5779 \
+    --lambda_w 1.8142 \
+    --lambda_g 0.3537 \
+    --lambda_adversarial 0.0928 \
+    --lambda_perceptual 0.3942 \
+    --d_lr_scale 1.0 \
+    --use_spade false \
+    --run_name "baseline_best82" \
+    --group "cosia_aux2" \
+    --project TIR_SISR_v2 \
+
+echo "Running with 2nd best hyperparameters:"
+python -m scripts.training.train \
+    --lr 1e-4 \
+    --max_epochs 150 \
+    --batch_size 4 \
+    --patience 50 \
+    --num_workers 4 \
+    --lambda_nw 0.9838 \
+    --lambda_w 2.2861 \
+    --lambda_g 0.2577 \
+    --lambda_adversarial 0.0911 \
+    --lambda_perceptual 0.4688 \
+    --d_lr_scale 1.0 \
+    --use_spade false \
+    --run_name "baseline_best84" \
+    --group "cosia_aux2" \
+    --project TIR_SISR_v2 \
+
+echo "SPADE ON"
+echo "Running best hyperparameters:"
+python -m scripts.training.train \
+    --lr 1e-4 \
+    --max_epochs 150 \
+    --batch_size 4 \
+    --patience 50 \
+    --num_workers 4 \
+    --lambda_nw 0.5779 \
+    --lambda_w 1.8142 \
+    --lambda_g 0.3537 \
+    --lambda_adversarial 0.0928 \
+    --lambda_perceptual 0.3942 \
     --d_lr_scale 1.0 \
     --use_spade true \
-    --run_name "exp1" \
-    --group "cosia_aux" \
+    --run_name "exp3_best82" \
+    --group "cosia_aux2" \
     --project TIR_SISR_v2 \
+
+echo "Running with 2nd best hyperparameters:"
+python -m scripts.training.train \
+    --lr 1e-4 \
+    --max_epochs 150 \
+    --batch_size 4 \
+    --patience 50 \
+    --num_workers 4 \
+    --lambda_nw 0.9838 \
+    --lambda_w 2.2861 \
+    --lambda_g 0.2577 \
+    --lambda_adversarial 0.0911 \
+    --lambda_perceptual 0.4688 \
+    --d_lr_scale 1.0 \
+    --use_spade true \
+    --run_name "exp3_best84" \
+    --group "cosia_aux2" \
+    --project TIR_SISR_v2 \
+
+# best lambdas
+# lambda_adversarial:
+# 0.09111855035655785
+# lambda_g:
+# 0.2576985417548614
+# lambda_nw:
+# 0.983774191477874
+# lambda_perceptual:
+# 0.4687885084292344
+# lambda_w:
+# 2.286066968410901

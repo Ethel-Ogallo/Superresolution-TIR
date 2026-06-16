@@ -1,7 +1,10 @@
-# spade.py — Spatially Adaptive Denormalization for TIR Super-Resolution
+"""
+spade.py — Spatially Adaptive Denormalization for TIR Super-Resolution
+adapted from: https://github.com/NVlabs/SPADE/tree/master
+"""
+
 import torch
 import torch.nn as nn
-from torch.nn.utils import spectral_norm
 import torch.nn.functional as F
 
 # -------------------- SPADE LAYER ------------------------
@@ -55,7 +58,7 @@ class SPADE(nn.Module):
 # ---------------- SPADE RESIDUAL BLOCK -----------------
 class SPADEResnetBlock(nn.Module):
     """
-    Authentic Pre-Activation SPADE Residual Block.
+    Pre-Activation SPADE Residual Block.
     Structure:
         x → LeakyReLU → SPADE_0 → Conv_0 → LeakyReLU → SPADE_1 → Conv_1 → + skip
     """
@@ -65,16 +68,15 @@ class SPADEResnetBlock(nn.Module):
         self.learned_shortcut = (fin != fout)
         fmiddle = min(fin, fout)
 
-        # Convolutions are spectrally normalized to sustain adversarial stability
-        self.conv_0 = spectral_norm(nn.Conv2d(fin, fmiddle, kernel_size=3, padding=1))
-        self.conv_1 = spectral_norm(nn.Conv2d(fmiddle, fout, kernel_size=3, padding=1))
+        self.conv_0 = nn.Conv2d(fin, fmiddle, kernel_size=3, padding=1)
+        self.conv_1 = nn.Conv2d(fmiddle, fout, kernel_size=3, padding=1)
 
         # Reconstructed Pre-Activation Normalization Sequence
         self.norm_0 = SPADE(fin, seg_nc)
         self.norm_1 = SPADE(fmiddle, seg_nc)
 
         if self.learned_shortcut:
-            self.conv_s = spectral_norm(nn.Conv2d(fin, fout, kernel_size=1, bias=False))
+            self.conv_s = nn.Conv2d(fin, fout, kernel_size=1, bias=False)
             self.norm_s = SPADE(fin, seg_nc)
 
     def forward(self, x: torch.Tensor, seg: torch.Tensor) -> torch.Tensor:
@@ -106,11 +108,11 @@ class RRDBNetWithSPADE(nn.Module):
     Wrapper around RRDBNet that injects SPADE at upsampling stages.
     Maintains a 100% plug-and-play surface with Lightning module.
     """
-    def __init__(self, rrdb_net, n_feats=64, seg_nc_mid=23, seg_nc_hr=23):
+    def __init__(self, rrdb_net, n_feats=64, seg_nc=14):
         super().__init__()
         self.net = rrdb_net
-        self.spade_mid = SPADEResnetBlock(n_feats, n_feats, seg_nc_mid)
-        self.spade_hr  = SPADEResnetBlock(n_feats, n_feats, seg_nc_hr)
+        self.spade_mid = SPADEResnetBlock(n_feats, n_feats, seg_nc)
+        self.spade_hr  = SPADEResnetBlock(n_feats, n_feats, seg_nc)
 
     def forward(self, x, aux_mid=None, aux_hr=None):
         if aux_mid is None or aux_hr is None:

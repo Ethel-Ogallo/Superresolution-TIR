@@ -24,14 +24,15 @@ Time fields are loaded as tensors but used in two ways:
     2. Loss weight  : passed as scalars to combined_loss to modulate
                       the global loss weight.
 
-Aux channel layout (20ch, fixed at patch creation):
+Aux channel layout (23ch, fixed at patch creation):
 [0:5]   spectral bands 1–5    continuous  [0, 1]
 [5]     NDVI                  continuous  [-1, 1]
 [6]     NDWI                  continuous  [-1, 1]
 [7]     NDMI                  continuous  [-1, 1]
-[8:19]  LULC one-hot (11cls)  binary      {0, 1}
-[19]    DEM                   continuous  [0, 1]
+[8:22]  COSIA one-hot (14cls) binary      {0, 1}
+[22]    DEM                   continuous  [0, 1]
 """
+
 
 import json
 import numpy as np

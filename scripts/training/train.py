@@ -101,13 +101,23 @@ def run(args):
                        use_water_mask=True, 
                        aux_dir=str(PATCHES_DIR / "val" / "AUX"), 
                        transform=None)
+    
+    test_ds = SRDataset(split="test", 
+                        patches_dir=PATCHES_DIR,    
+                        stats_path=STATS_PATH,
+                        use_aux=True, 
+                        use_water_mask=True, 
+                        aux_dir=str(PATCHES_DIR / "test" / "AUX"), 
+                        transform=None)
 
     loader_kw = dict(num_workers=args.num_workers, pin_memory=True)
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, 
                               shuffle=True, **loader_kw)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, 
                             shuffle=False, **loader_kw)
-
+    test_loader = DataLoader(test_ds, batch_size=args.batch_size, 
+                             shuffle=False, **loader_kw)
+    
     # Get auxiliary channel count from the dataset
     raw_aux_chans = train_ds[0]["aux_lr"].shape[0]
     
@@ -144,6 +154,9 @@ def run(args):
     
     t0 = time.time()
     trainer.fit(model, train_loader, val_loader)
+
+    # test
+    trainer.test(model, test_loader, ckpt_path=ckpt.best_model_path)
     
     print(f"[FINISH] Completed in {(time.time() - t0)/60:.2f}m | Best CKPT: {ckpt.best_model_path}")
     wandb.finish()
