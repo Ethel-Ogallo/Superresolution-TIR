@@ -33,7 +33,7 @@ class RealESRGANModule(pl.LightningModule):
         lambda_w: float = 1.0,
         lambda_g: float = 0.1,  
         aux_chans: int = 23,
-        use_spade: bool = True,  # Controls architecture path: True for SPADE, False for Baseline
+        use_spade: bool = True, 
         **kwargs,
     ):
 

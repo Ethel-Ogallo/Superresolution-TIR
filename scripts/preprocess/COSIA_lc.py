@@ -46,15 +46,17 @@ NODATA_VAL = 0
 
 def build_tile_index(cosia_dir: Path) -> gpd.GeoDataFrame:
     records = []
+    # Loop through files and extract the ACTUAL bounding box from metadata
     for gpkg in sorted(cosia_dir.glob("*.gpkg")):
         try:
-            parts = gpkg.stem.split("_")
-            x, y = int(parts[2]) * 1000, int(parts[3]) * 1000
-            records.append({"path": gpkg, 
-                            "geometry": box(x, y, x + 10000, y + 10000)})
-        except: continue
+            # Using rows=0 is the fastest way to get metadata without loading all features
+            gdf_meta = gpd.read_file(gpkg, rows=0)
+            bounds = gdf_meta.total_bounds
+            records.append({"path": gpkg, "geometry": box(*bounds)})
+        except Exception as e:
+            print(f"  Skipping {gpkg.name}: {e}")
+            continue
     return gpd.GeoDataFrame(records, crs="EPSG:2154")
-
 
 def rasterize_landcover(lc_gdf, 
                         hr_height, 
