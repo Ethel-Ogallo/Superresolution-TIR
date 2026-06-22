@@ -31,7 +31,7 @@ PATCHES_DIR = BASE / "data/processed/patches"
 CONFIGS_DIR = BASE / "configs"
 STATS_PATH = PATCHES_DIR / "stats.json"
 PRETRAINED = BASE / "data/pretrained"
-CKPT_DIR = BASE / "checkpoints/gan_v3"
+CKPT_DIR = BASE / "checkpoints/gan_v4"
 CKPT_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -156,7 +156,7 @@ def run(args):
     trainer.fit(model, train_loader, val_loader)
 
     # test
-    trainer.test(model, test_loader, ckpt_path=ckpt.best_model_path)
+    # trainer.test(model, test_loader, ckpt_path=ckpt.best_model_path)
     
     print(f"[FINISH] Completed in {(time.time() - t0)/60:.2f}m | Best CKPT: {ckpt.best_model_path}")
     wandb.finish()

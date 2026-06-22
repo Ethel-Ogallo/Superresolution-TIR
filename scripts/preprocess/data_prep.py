@@ -175,12 +175,6 @@ def extract_qa_tile(qa_data, row, col):
     """Extract QA tile at LR resolution (direct pixel lookup, no averaging)."""
     return qa_data[row:row+HR_TILE:4, col:col+HR_TILE:4]
 
-# -------------- Patch logic --------------
-# DEBUG — remove after testing
-# DEBUG_SINGLE = "BAS_2025.tif"  # train/val campaign
-# DEBUG_SINGLE = "BRC_2022.tif"  # test campaign
-
-
 all_metadata = {}
 total_saved  = {"train": 0, "val": 0, "test": 0}
 

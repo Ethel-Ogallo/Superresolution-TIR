@@ -1,69 +1,74 @@
-# sweep sans spade
 # configs/sweep.yaml
 program: scripts/training/train.py
 project: TIR_SISR_v2   
-method: bayes       
+method: grid       
 metric:
   name: val/water_mae
   goal: minimize    
 
 parameters:
   # --- Fixed Arguments for Training Stability ---
-  lr:
-    value: 0.0001
   batch_size:
     value: 4
   max_epochs:
-    value: 80
+    value: 50
   patience:
-    value: 15
+    value: 10
   num_workers:
     value: 4
   seed:
     value: 42
   use_spade:
-    value: false
-  d_lr_scale:
-    value: 1.0 
-
+    value: true
   group:
-    value: "sweep2_cosia"
+    value: "sweep4_cosia"
+  
+  # --- Your Fixed, Optimized Loss Weights ---
+  lambda_nw:
+    value: 0.6549
+  lambda_w:
+    value: 1.8146
+  lambda_g:
+    value: 0.1323
+  lambda_adversarial:
+    value: 0.0831
+  lambda_perceptual:
+    value: 0.6169
+    
+  # --- Hyperparameters to Sweep (Discrete Cross-Matrix) ---
+  # Base Generator Learning Rate
+  lr:
+    values: [1e-4, 5e-5]
+
+  # Discriminator Scale Multiplier
+  d_lr_scale:
+    values: [1.0, 0.4, 0.2, 0.1]
          
   # --- Hyperparameters to Sweep ---
-parameters:
-  lambda_nw:
-    distribution: uniform
-    min: 0.5
-    max: 1.0
+# parameters:
+#   lambda_nw:
+#     distribution: uniform
+#     min: 0.5
+#     max: 1.0
 
-  lambda_w:
-    distribution: uniform
-    min: 1.5
-    max: 3.0
+#   lambda_w:
+#     distribution: uniform
+#     min: 1.5
+#     max: 3.0
 
-  lambda_g:
-    distribution: uniform
-    min: 0.1
-    max: 0.4
+#   lambda_g:
+#     distribution: uniform
+#     min: 0.1
+#     max: 0.4
 
-  lambda_perceptual:
-    distribution: log_uniform_values
-    min: 0.3
-    max: 1.0
+#   lambda_perceptual:
+#     distribution: log_uniform_values
+#     min: 0.3
+#     max: 1.0
 
-  lambda_adversarial:
-    distribution: log_uniform_values
-    min: 0.02
-    max: 0.1
+#   lambda_adversarial:
+#     distribution: log_uniform_values
+#     min: 0.02
+#     max: 0.1
 
-
-
-  # lambda_perceptual:
-  #   value: 0.791
-  # lambda_adversarial:
-  #   value: 0.061
-  # lambda_w:
-  #   value: 1.562
-  # lambda_nw:
-  #   value: 0.353         
 

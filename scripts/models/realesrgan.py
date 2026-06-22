@@ -9,6 +9,7 @@ import lightning.pytorch as pl
 from basicsr.archs import rrdbnet_arch, discriminator_arch
 from basicsr.losses.gan_loss import GANLoss
 from basicsr.losses.basic_loss import PerceptualLoss
+from torchmetrics.image import LearnedPerceptualImagePatchSimilarity
 
 from scripts.models.spade import RRDBNetWithSPADE
 from scripts.utils.metrics import compute_metrics
@@ -68,55 +69,37 @@ class RealESRGANModule(pl.LightningModule):
         # Modify input layer to accept the expanded multi-channel auxiliary stack
         self._expand_conv_first(rrdb, self.total_in_ch)
 
-        # SPADE wrapper - the bypass will route around this if use_spade=False
-        self.net_g = RRDBNetWithSPADE(rrdb_net=rrdb,
-                                    n_feats=n_feats,
-                                    seg_nc=14)   # 14 COSIA one-hot channels [8:22]
+        # SPADE wrapper
+        self.net_g = RRDBNetWithSPADE(rrdb_net=rrdb, n_feats=n_feats, seg_nc=14)   
         self.out_head = nn.Conv2d(3, 1, 1)
         
         # Discriminator for adversarial training
-        self.net_d = discriminator_arch.UNetDiscriminatorSN(num_in_ch=3, 
-                                                            num_feat=64, 
-                                                            skip_connection=True)
+        self.net_d = discriminator_arch.UNetDiscriminatorSN(num_in_ch=3, num_feat=64, skip_connection=True)
         
-        if pretrained_d_path: self._load_weights(self.net_d, 
-                                                 pretrained_d_path, 
-                                                 "discriminator")
+        if pretrained_d_path: self._load_weights(self.net_d, pretrained_d_path, "discriminator")
 
         # Required to take manual control over dual-optimizer GAN step updates
         self.automatic_optimization = False 
 
         # ----- Loss Configurations -----
-        # ANALYSIS FIX: real_label_val changed to 0.9 (Label Smoothing).
-        # This keeps the discriminator from hitting absolute certainty (1.0),
-        # preserving ongoing gradient flow so it doesn't drop to 0 loss and stall training.
-        self.gan_loss = GANLoss(gan_type="vanilla", 
-                                real_label_val=0.9, 
-                                fake_label_val=0.0, 
-                                loss_weight=lambda_adversarial)
+        self.gan_loss = GANLoss(gan_type="vanilla", real_label_val=0.9, fake_label_val=0.0, loss_weight=lambda_adversarial)
         
-        # Pretrained VGG19 network handles structural composition penalties
         self.perceptual_loss = PerceptualLoss(
             layer_weights={
-                    "conv1_2": 1.0,   # edges — physically meaningful for TIR boundaries
-                    "conv2_2": 1.0,   # textures — still useful
-                    "conv3_4": 0.5,   # mid-level — marginal relevance
-                    "conv4_4": 0.1,   # semantic — largely irrelevant for TIR
-                    "conv5_4": 0.1,   # semantic — largely irrelevant for TIR
+                    "conv1_2": 1.0, "conv2_2": 1.0, "conv3_4": 0.5, "conv4_4": 0.1, "conv5_4": 0.1,
                 },
-            vgg_type="vgg19", 
-            use_input_norm=True, 
-            range_norm=False, 
-            perceptual_weight=lambda_perceptual,
-            style_weight=0.0, 
-            criterion="l1"
+            vgg_type="vgg19", use_input_norm=True, range_norm=False, perceptual_weight=lambda_perceptual, style_weight=0.0, criterion="l1"
         ) if lambda_perceptual > 0 else None
 
         if self.perceptual_loss:
             for p in self.perceptual_loss.parameters(): p.requires_grad = False
 
+        # ----- LPIPS Metric Initialization -----
+        self.lpips_fn = LearnedPerceptualImagePatchSimilarity(net_type='vgg', normalize=True)
+        self.lpips_fn.eval()
+        for p in self.lpips_fn.parameters(): p.requires_grad = False
+
     # -------------- Forward and Loss Computation --------------
-    # adds the time channels to the input stack and routes through the appropriate architecture path based on use_spade flag
     def _build_time_channels(self, batch, H, W):
         B = batch["lr"].shape[0]
         device = batch["lr"].device
@@ -125,12 +108,10 @@ class RealESRGANModule(pl.LightningModule):
 
     def forward(self, batch):
         lr = batch["lr"]
-        x = torch.cat([lr, 
-                    batch["aux_lr"], 
-                    self._build_time_channels(batch, lr.shape[2], lr.shape[3])], dim=1)
+        x = torch.cat([lr, batch["aux_lr"], self._build_time_channels(batch, lr.shape[2], lr.shape[3])], dim=1)
         
         if self.use_spade:
-            seg_mid = batch["aux_mid"][:, 8:22, :, :]  # COSIA one-hot only
+            seg_mid = batch["aux_mid"][:, 8:22, :, :]  
             seg_hr  = batch["aux_hr"][:, 8:22, :, :]
             gen_out = self.net_g(x, seg_mid, seg_hr)
         else:
@@ -149,37 +130,19 @@ class RealESRGANModule(pl.LightningModule):
         sr, hr = self(batch), batch["hr"]
         sr_phys, hr_phys = self.denormalize(sr), self.denormalize(hr[:, 0:1])
 
-        # 1. Physics loss works on valid pixels 
-        loss_dict = combined_loss(sr_phys, 
-                                  hr_phys, 
-                                  batch["hr_mask"], 
-                                  batch["water_mask"], 
-                                  self.lambda_nw, 
-                                  self.lambda_w, 
-                                  self.lambda_g, 
-                                  batch["time_gap_hours"],   
-                                  batch["date_gap_days"],
-                                )
+        loss_dict = combined_loss(sr_phys, hr_phys, batch["hr_mask"], batch["water_mask"], 
+                                  self.lambda_nw, self.lambda_w, self.lambda_g, 
+                                  batch["time_gap_hours"], batch["date_gap_days"])
         
-        # 2. Extract valid pixels mask [B, 1, H, W]
         valid_mask = batch["hr_mask"][:, 0:1].float()
-        
-        # 3. Apply mask to isolate the true data stream
         sr_masked = sr * valid_mask
         hr_masked = hr[:, 0:1] * valid_mask
 
         # -------- Optimize Generator --------
         self.toggle_optimizer(opt_g)
 
-        # Perceptual and adversarial inside generator context
-        percep = self.perceptual_loss(
-            sr_masked.repeat(1, 3, 1, 1),
-            hr_masked.repeat(1, 3, 1, 1)
-        )[0] if self.perceptual_loss else sr.sum() * 0.0
-
-        gan_g = self.gan_loss(
-            self.net_d(sr_masked.repeat(1, 3, 1, 1)), True, False
-        ) if self.hparams.lambda_adversarial > 0 else sr.sum() * 0.0
+        percep = self.perceptual_loss(sr_masked.repeat(1, 3, 1, 1), hr_masked.repeat(1, 3, 1, 1))[0] if self.perceptual_loss else sr.sum() * 0.0
+        gan_g = self.gan_loss(self.net_d(sr_masked.repeat(1, 3, 1, 1)), True, False) if self.hparams.lambda_adversarial > 0 else sr.sum() * 0.0
 
         loss_g = (loss_dict["loss_total"] + percep + gan_g) / self.accum_steps
         self.manual_backward(loss_g)
@@ -217,9 +180,6 @@ class RealESRGANModule(pl.LightningModule):
             "train/loss_water": loss_dict["loss_water"],
             "train/loss_grad":  loss_dict["loss_grad"],
             "train/w_time":     loss_dict["w_time"],
-            "train/w_loss_nw":  loss_dict["loss_nw"]   * self.lambda_nw,
-            "train/w_loss_water": loss_dict["loss_water"] * self.lambda_w,
-            "train/w_loss_grad":  loss_dict["loss_grad"]  * self.lambda_g,
         }, on_step=False, on_epoch=True, prog_bar=True)
         
         return loss_g
@@ -229,36 +189,20 @@ class RealESRGANModule(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         sr, hr = self(batch), batch["hr"]
         valid_mask = batch["hr_mask"][:, 0:1].float()
-        
         sr_masked = sr * valid_mask
         hr_masked = hr[:, 0:1] * valid_mask
 
-        loss_dict = combined_loss(
-            self.denormalize(sr),
-            self.denormalize(hr[:, 0:1]),
-            batch["hr_mask"],
-            batch["water_mask"],
-            self.lambda_nw,
-            self.lambda_w,
-            self.lambda_g,
-        )
-        
-        val_percep = self.perceptual_loss(
-            sr_masked.repeat(1, 3, 1, 1),
-            hr_masked.repeat(1, 3, 1, 1)
-        )[0] if self.perceptual_loss else torch.tensor(0.0, device=sr.device)
+        loss_dict = combined_loss(self.denormalize(sr), self.denormalize(hr[:, 0:1]), batch["hr_mask"], batch["water_mask"], self.lambda_nw, self.lambda_w, self.lambda_g)
+        val_percep = self.perceptual_loss(sr_masked.repeat(1, 3, 1, 1), hr_masked.repeat(1, 3, 1, 1))[0] if self.perceptual_loss else torch.tensor(0.0, device=sr.device)
 
         if self.hparams.lambda_adversarial > 0:
-            val_gan_g = self.gan_loss(
-                self.net_d(sr_masked.repeat(1, 3, 1, 1)), True, False
-            )
+            val_gan_g = self.gan_loss(self.net_d(sr_masked.repeat(1, 3, 1, 1)), True, False)
             val_gan_d = 0.5 * (
                 self.gan_loss(self.net_d(hr_masked.repeat(1, 3, 1, 1)), True, True) +
                 self.gan_loss(self.net_d(sr_masked.detach().repeat(1, 3, 1, 1)), False, True)
             )
         else:
-            val_gan_g = torch.tensor(0.0, device=sr.device)
-            val_gan_d = torch.tensor(0.0, device=sr.device)
+            val_gan_g = val_gan_d = torch.tensor(0.0, device=sr.device)
 
         self.log_dict({
             "val/loss_g":     loss_dict["loss_total"] + val_percep + val_gan_g,
@@ -266,27 +210,16 @@ class RealESRGANModule(pl.LightningModule):
             "val/perceptual": val_percep,
             "val/gan_g":      val_gan_g,
             "val/gan_d":      val_gan_d,
-            "val/loss_nw":    loss_dict["loss_nw"],
-            "val/loss_water": loss_dict["loss_water"],
-            "val/loss_grad":  loss_dict["loss_grad"],
-            "val/w_time":     loss_dict["w_time"],
-            "val/w_loss_nw":  loss_dict["loss_nw"]    * self.lambda_nw,
-            "val/w_loss_water": loss_dict["loss_water"] * self.lambda_w,
-            "val/w_loss_grad":  loss_dict["loss_grad"]  * self.lambda_g,
         }, on_step=False, on_epoch=True)
         
-        metrics = compute_metrics(
-            self,
-            self.denormalize(sr),
-            self.denormalize(hr[:, 0:1]),
-            batch["hr_mask"], "val",
-            batch.get("water_mask"),
-        )
+        # Computes metrics dict (now contains land_lpips and water_lpips automatically)
+        metrics = compute_metrics(self, self.denormalize(sr), self.denormalize(hr[:, 0:1]), batch["hr_mask"], "val", batch.get("water_mask"))
+        
         self.log_dict(
             {f"val/{k}": v for k, v in metrics.items() if v is not None},
             on_step=False, on_epoch=True,
         )
-        # Step scheduler manually since automatic_optimization=False
+        
         sch = self.lr_schedulers()
         if sch is not None:
             sch.step(self.trainer.callback_metrics.get("val/water_mae", 1.0))
@@ -295,51 +228,20 @@ class RealESRGANModule(pl.LightningModule):
     @torch.no_grad()
     def test_step(self, batch, batch_idx):
         sr, hr = self(batch), batch["hr"]
-        valid_mask = batch["hr_mask"][:, 0:1].float()
 
-        sr_masked = sr * valid_mask
-        hr_masked = hr[:, 0:1] * valid_mask
-
-        loss_dict = combined_loss(
-            self.denormalize(sr),
-            self.denormalize(hr[:, 0:1]),
-            batch["hr_mask"],
-            batch["water_mask"],
-            self.lambda_nw,
-            self.lambda_w,
-            self.lambda_g,
-        )
-
-        metrics = compute_metrics(
-            self,
-            self.denormalize(sr),
-            self.denormalize(hr[:, 0:1]),
-            batch["hr_mask"], "test",
-            batch.get("water_mask"),
-        )
-
+        metrics = compute_metrics(self, self.denormalize(sr), self.denormalize(hr[:, 0:1]), batch["hr_mask"], "test", batch.get("water_mask"))
         self.log_dict(
             {f"test/{k}": v for k, v in metrics.items() if v is not None},
             on_step=False, on_epoch=True,
         )
 
-        self.log_dict({
-            "test/loss_water": loss_dict["loss_water"],
-            "test/loss_nw":    loss_dict["loss_nw"],
-            "test/loss_grad":  loss_dict["loss_grad"],
-            "test/recon":      loss_dict["loss_total"],
-        }, on_step=False, on_epoch=True)  
-
     # -------------- Optimizer Configuration --------------
     def configure_optimizers(self):
         g_params = list(self.net_g.parameters()) + list(self.out_head.parameters())
         opt_g = optim.Adam(g_params, lr=self.hparams.learning_rate, betas=(0.5, 0.999))
-        opt_d = optim.Adam(self.net_d.parameters(),
-                        lr=self.hparams.learning_rate * self.hparams.d_lr_scale,
-                        betas=(0.5, 0.999))
+        opt_d = optim.Adam(self.net_d.parameters(), lr=self.hparams.learning_rate * self.hparams.d_lr_scale, betas=(0.5, 0.999))
         return [opt_g, opt_d]
         
-    # -------------- Utility functions ----------------     
     def denormalize(self, x):
         return x * self.hr_std + self.hr_mean
     
