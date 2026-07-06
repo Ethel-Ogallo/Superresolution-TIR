@@ -31,7 +31,7 @@ PATCHES_DIR = BASE / "data/processed/patches"
 CONFIGS_DIR = BASE / "configs"
 STATS_PATH = PATCHES_DIR / "stats.json"
 PRETRAINED = BASE / "data/pretrained"
-CKPT_DIR = BASE / "checkpoints/gan_v4"
+CKPT_DIR = BASE / "checkpoints/gan_v6"
 CKPT_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -156,7 +156,7 @@ def run(args):
     trainer.fit(model, train_loader, val_loader)
 
     # test
-    # trainer.test(model, test_loader, ckpt_path=ckpt.best_model_path)
+    trainer.test(model, test_loader, ckpt_path=ckpt.best_model_path)
     
     print(f"[FINISH] Completed in {(time.time() - t0)/60:.2f}m | Best CKPT: {ckpt.best_model_path}")
     wandb.finish()
@@ -172,9 +172,8 @@ def parse_args():
     p.add_argument("--patience", type=int, default=10)
     p.add_argument("--num_workers", type=int, default=4)
     p.add_argument("--seed", type=int, default=42)
-    
     p.add_argument("--lambda_nw", type=float, default=1.0)
-    p.add_argument("--lambda_w", type=float, default=1.0)
+    p.add_argument("--lambda_w", type=float, default=2.0)
     p.add_argument("--lambda_g", type=float, default=0.1)
     p.add_argument("--lambda_adversarial", type=float, default=0.1) 
     p.add_argument("--lambda_perceptual", type=float, default=1.0)

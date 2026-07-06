@@ -32,7 +32,7 @@ trainval_rasters = [
 # set aside because of observable geographic AOI in full dataset campaigns together
 # test set rasters only
 # test_rasters = [
-#     "BRC_2022.tif", "BRC_2023.tif", "BRC_2024.tif",
+#     "BRC_2022.tif", "BRC_2023.tif", 
 #     "HAUT_2025.tif"
 # ]
 

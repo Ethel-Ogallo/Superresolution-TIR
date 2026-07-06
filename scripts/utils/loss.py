@@ -63,7 +63,7 @@ def gradient_loss_batch(sr, hr, hr_mask):
 
 def compute_wt_batch(time_gap_hours, date_gap_days,
                      lambda_doy=0.3, lambda_tod=0.7,
-                     clamp_min=0.8):
+                     clamp_min=0.2):
     """
     Vectorized w_t computation directly on tensors. No .item() calls, no loop.
     Returns w_t per sample: [B]
