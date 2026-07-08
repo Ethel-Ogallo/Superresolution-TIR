@@ -31,7 +31,7 @@ python -m scripts.training.train \
     --lambda_perceptual 0.7037 \
     --d_lr_scale 1.0 \
     --use_spade true \
-    --run_name "final_exp3" \
+    --run_name "exp4_sans_aug" \
     --group "spade" \
     --project TIR_SISR_v3 \
 

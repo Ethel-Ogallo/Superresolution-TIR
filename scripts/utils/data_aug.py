@@ -137,6 +137,6 @@ def train_transforms():
         RandomHorizontalFlip(p=0.5),
         RandomVerticalFlip(p=0.5),
         RandomRotation90(),
-        TIRNoise(std=0.01, p=0.5),
-        BlurAugment(sigma_range=(0.5, 1.5)),
+        # TIRNoise(std=0.01, p=0.5),
+        # BlurAugment(sigma_range=(0.5, 1.5)),
     ])

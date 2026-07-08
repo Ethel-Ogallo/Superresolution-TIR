@@ -19,7 +19,7 @@ HR_DIR     = BASE / "HR_downsampled"
 LS_DIR     = BASE / "Landsat"
 SPLIT_JSON = BASE / "split_map.json"
 PAIRS_JSON = BASE / "hr_lr_pairs.json"
-OUT_DIR    = BASE / "processed/patches"
+OUT_DIR    = BASE / "processed/patches2"
 
 # Config 
 HR_TILE       = 256
@@ -29,7 +29,7 @@ STEP_VAL_TEST = HR_TILE        # 256px → no overlap
 CLIP_BUFFER_M = 300            # buffer when clipping Landsat to HR footprint
 MAX_CLOUD_FRAC   = 0.40        # skip LR tile if cloud fraction exceeds this
 MAX_SHADOW_FRAC  = 0.10        # skip LR tile if shadow fraction exceeds this
-MIN_VALID_FRAC   = 0.10        # skip HR tile if valid pixel fraction below this
+MIN_VALID_FRAC   = 0.05        # skip HR tile if valid pixel fraction below this
 MAX_VALID_FRAC   = 1.00        
 BIT_CLOUD        = 3
 BIT_CLOUD_SHADOW = 4
@@ -197,12 +197,14 @@ for hr_path in sorted(HR_DIR.glob("*.tif")):
     print(f"Processing : {fname} ({'TEST' if is_test else 'TRAIN/VAL'})")
     print(f"Paired with: {pair_info['ls_name']}")
 
-    # Define blocks
+    # Define blocks >>> FIX
     if is_test:
         with rasterio.open(hr_path) as src:
+            # FIX: Round the test campaign height up to a perfect multiple of 256
+            max_required_row = int(np.ceil(src.height / HR_TILE) * HR_TILE)
             blocks = [{"block_id": 0,
                        "row_start": 0,
-                       "row_end": src.height,
+                       "row_end": max_required_row,
                        "split": "test"}]
     else:
         if fname not in split_map:
@@ -245,6 +247,24 @@ for hr_path in sorted(HR_DIR.glob("*.tif")):
         # Mask HR nodata
         if hr_nodata is not None:
             hr_data[hr_data < -1e30] = np.nan
+
+        # ====================================================================
+        # FIX: Pad the bottom of all arrays to the newly expanded grid height
+        # ====================================================================
+        max_required_row = max(block["row_end"] for block in blocks)
+        if hr_data.shape[0] < max_required_row:
+            pad_rows = max_required_row - hr_data.shape[0]
+            
+            # Pad HR data matrix
+            hr_data = np.pad(hr_data, ((0, pad_rows), (0, 0)), mode='constant', constant_values=np.nan)
+            
+            # Pad intermediate Band 10 data matrix
+            b10_data = np.pad(b10_data, ((0, pad_rows), (0, 0)), mode='constant', constant_values=np.nan)
+            
+            # Pad QA raster array (use 0/clear for padded pixels to prevent cloud-skipping anomalies)
+            qa_data = np.pad(qa_data, ((0, pad_rows), (0, 0)), mode='constant', constant_values=0)
+            
+            print(f"  --> Virtual Padding Applied: Padded bottom with {pad_rows} rows out to row {max_required_row}")
 
         # Convert B10 DN → Celsius using MTL values
         b10_valid = (b10_data > 0)

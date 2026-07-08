@@ -100,11 +100,6 @@ print(f"  p1={hr_range['low_percentile']:.4f}  "
       f"range={hr_range['data_range']:.4f}")
 
 # Save stats
-# stats = {
-#     "description": "Global normalisation stats computed from train tiles only",
-#     "hr": hr_stats,
-#     "lr": lr_stats
-# }
 stats = {
     "description": "Global normalisation stats computed from train tiles only",
     "hr": hr_stats,

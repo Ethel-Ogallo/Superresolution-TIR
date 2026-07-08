@@ -5,24 +5,6 @@ from kornia.filters import SpatialGradient
 # Initialize Kornia Sobel filter (computes horizontal dX and vertical dY gradients)
 _sobel = SpatialGradient(mode="sobel", normalized=True)
 
-# def gradient_loss(sr, hr, hr_mask):
-#     """
-#     Computes global structural edge error using 2D Sobel operators.
-#     Measures how sharp and aligned the riverbanks and geometric boundaries are.
-#     """
-#     # Outputs shape: [B, 1, 2, H, W] representing structural gradient components
-#     sr_g = _sobel(sr)
-#     hr_g = _sobel(hr)
-
-#     # Inwardly erode the image border slightly to eliminate harsh edge clipping artifacts
-#     mask_valid = (F.avg_pool2d(hr_mask, 3, 1, 1) > 0.99).float()
-#     mask_g = mask_valid.unsqueeze(2) # Broadened to channel broadcast smoothly
-
-#     err = torch.abs(sr_g - hr_g) * mask_g
-    
-#     # Scale denominator by 2.0 because each pixel has a horizontal and vertical derivative
-#     return err.sum() / torch.clamp(mask_g.sum() * 2.0, min=1.0)
-
 def regional_masked_l1_batch(sr, hr, mask):
     """
     Fully vectorized masked L1 over [B, 1, H, W] tensors.

@@ -5,7 +5,7 @@ from rasterio.warp import reproject, Resampling
 from pathlib import Path
 
 # ─── Config ──────────────────────────────────────────────────────────────────
-PATCHES_BASE = Path("/share/home/e2406751/Superresolution-TIR/data/processed/patches")
+PATCHES_BASE = Path("/share/home/e2406751/Superresolution-TIR/data/processed/patches2")
 AUX_DIR      = Path("/share/home/e2406751/Superresolution-TIR/data/AUX/auxiliary")
 COSIA_LC_DIR = Path("/share/home/e2406751/Superresolution-TIR/data/AUX/COSIA")
 STATS_PATH   = Path("/share/home/e2406751/Superresolution-TIR/data/AUX/dem_stats.json")
@@ -99,8 +99,8 @@ for subfolder, size in CONFIGS.items():
             )
                         
             # 4. Apply Normalization & Direct Clipping
-            spectral_indices[:5] = clean_and_clip_spectral(spectral_indices[:5])
-            spectral_indices[5:] = normalize_index(spectral_indices[5:])
+            spectral_indices[:5] = clean_and_clip_spectral(spectral_indices[:5]) # spectral bands
+            spectral_indices[5:] = normalize_index(spectral_indices[5:])  # derived indices (NDVI, NDWI, NDMI)
             dem = normalize_dem(dem, dem_stats[campaign]["p2"], dem_stats[campaign]["p98"])
             
             # 5. Stack into target matrix structure: [23, H, W]
