@@ -33,6 +33,7 @@ from lightning.pytorch.loggers import WandbLogger
 from torch.utils.data import DataLoader
 
 from scripts.utils.dataset import SRDataset
+from scripts.utils.data_aug import train_transforms
 
 # Paths 
 BASE        = Path("/share/home/e2406751/Superresolution-TIR")
@@ -40,7 +41,7 @@ PATCHES_DIR = BASE / "data/processed/patches"
 STATS_PATH  = PATCHES_DIR / "stats.json"
 PRETRAINED  = BASE / "data/pretrained"
 CONFIGS_DIR = BASE / "configs"
-CKPT_DIR    = BASE / "checkpoints/phase2"
+CKPT_DIR    = BASE / "checkpoints/phase2.1"
 CKPT_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -153,11 +154,20 @@ def run(args):
         patches_dir=PATCHES_DIR,
         stats_path=STATS_PATH,
         repeat_channels=True,
-        transform=None,          # augmentations added in Phase 2 model dev
+        transform=train_transforms(),          
         use_water_mask=True,    # needed for masked_water loss in Phase 2 model dev
     )
     val_ds = SRDataset(
         split="val",
+        patches_dir=PATCHES_DIR,
+        stats_path=STATS_PATH,
+        repeat_channels=True,
+        transform=None,
+        use_water_mask=True,    # needed for masked_water loss in Phase 2 model dev
+    )
+
+    test_ds = SRDataset(
+        split="test",
         patches_dir=PATCHES_DIR,
         stats_path=STATS_PATH,
         repeat_channels=True,
@@ -172,6 +182,10 @@ def run(args):
     )
     val_loader = DataLoader(
         val_ds, batch_size=args.batch_size,
+        shuffle=False, **loader_kw
+    )
+    test_loader = DataLoader(
+        test_ds, batch_size=args.batch_size,
         shuffle=False, **loader_kw
     )
 
@@ -189,9 +203,9 @@ def run(args):
     #  Callbacks 
     ckpt_callback = ModelCheckpoint(
         dirpath   = CKPT_DIR / args.model,
-        filename  = f"{args.model}_phase2_{{epoch:02d}}_{{val_full_psnr:.4f}}",
-        monitor   = "val_full_psnr",
-        mode      = "max",
+        filename  = f"{args.model}_phase2_{{epoch:02d}}_{{val/water_mae:.4f}}",
+        monitor   = "val/water_mae",
+        mode      = "min",
         save_top_k= 1,
         verbose   = True,
     )
@@ -199,8 +213,8 @@ def run(args):
     callbacks = [
         ckpt_callback,
         EarlyStopping(
-            monitor  = "val_full_psnr",
-            mode     = "max",
+            monitor  = "val/water_mae",
+            mode     = "min",
             patience = args.patience,
             verbose  = True,
         ),
@@ -217,16 +231,19 @@ def run(args):
         precision               = precision,
         logger                  = wandb_logger,
         callbacks               = callbacks,
-        log_every_n_steps       = 5,
-        check_val_every_n_epoch = val_check_interval,  # add this
-        num_sanity_val_steps=0,
+        log_every_n_steps       = 10,
+        # check_val_every_n_epoch = val_check_interval,  # add this
+        # num_sanity_val_steps=0,
     )
 
     # Train 
     trainer.fit(model, train_loader, val_loader)
 
     print(f"\n[INFO] Best checkpoint: {ckpt_callback.best_model_path}")
-    print(f"[INFO] Best val_full_psnr:   {ckpt_callback.best_model_score:.4f}")
+    print(f"[INFO] Best val/water_mae:   {ckpt_callback.best_model_score:.4f}")
+
+    # test
+    trainer.test(model, test_loader, ckpt_path=ckpt_callback.best_model_path)
 
     wandb.finish()
 
@@ -245,7 +262,7 @@ def parse_args():
     p.add_argument("--patience",    type=int,   default=20)
     p.add_argument("--num_workers", type=int,   default=4)
     p.add_argument("--seed",        type=int,   default=42)
-    p.add_argument("--project",     default="TIR_sisr")
+    p.add_argument("--project",     default="TIR_sisr_final*")
     p.add_argument("--run_name",    default=None)
     p.add_argument("--group",       default=None)
 

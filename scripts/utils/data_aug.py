@@ -2,7 +2,7 @@
 augmentations.py — Spatial augmentations for TIR Super-Resolution 
 
 Rules:
-- All transforms applied identically to LR, HR and hr_maskto preserve spatial correspondence
+- All transforms applied identically to LR, HR and hr_mask to preserve spatial correspondence
 - LR transforms use scale-correct versions of spatial ops
 """
 
@@ -76,14 +76,6 @@ class RandomRotation90:
 #                 lr = gaussian_filter(lr, sigma=sig)
 #         return lr, hr, mask, aux
 
-# Random cropping for both HR and LR uisng basicsr's paired random crop
-# from basicsr.data.util import paired_random_crop
-# def random_crop(lr, hr, hr_mask, crop_size=128, scale=4):
-#     """Randomly crop a HR patch and the corresponding LR patch."""
-#     lr_crop, hr_crop, mask_crop = paired_random_crop(
-#         lr, hr, hr_mask, crop_size, scale
-#     )
-#     return lr_crop, hr_crop, mask_crop
 
 class Compose:
     """Apply a sequence of transforms."""

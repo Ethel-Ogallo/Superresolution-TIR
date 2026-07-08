@@ -10,8 +10,10 @@ import os
 import torch
 import torch.optim as optim
 import lightning.pytorch as pl
+import torch.nn.functional as F
 from basicsr.archs import edsr_arch
-from scripts.utils.metrics import shared_step
+from scripts.utils.metrics import compute_metrics
+from scripts.utils.loss import masked_l1
 
 
 class EDSRModule(pl.LightningModule):
@@ -19,8 +21,8 @@ class EDSRModule(pl.LightningModule):
     def __init__(
         self,
         pretrained_path: str  = None,
-        hr_mean: float        = 0.0,
-        hr_std: float         = 1.0,
+        hr_mean: float        = None,
+        hr_std: float         = None,
         learning_rate: float  = 1e-4,
         n_feats: int          = 64,
         n_blocks: int         = 16,
@@ -30,8 +32,11 @@ class EDSRModule(pl.LightningModule):
     ):
         super().__init__()
         self.save_hyperparameters()
-        self.DATA_RANGE = float(data_range)
-        self.DATA_MIN   = float(data_min)
+        self.hr_mean = hr_mean
+        self.hr_std = hr_std
+        self.DATA_RANGE = data_range
+        self.DATA_MIN = data_min
+
 
         self.body = edsr_arch.EDSR(
             num_in_ch=3,
@@ -47,24 +52,108 @@ class EDSRModule(pl.LightningModule):
             self._load_pretrained(pretrained_path)
         else:
             print("[INFO] No pretrained path — random init")
-
+    
+    # forward pass
     def forward(self, lr):
         return self.body(lr)           # (B, 3, 256, 256)
 
     def denormalize(self, t):
-        mean = torch.tensor(self.hparams.hr_mean, device=t.device)
-        std  = torch.tensor(self.hparams.hr_std,  device=t.device)
-        return t * std + mean
+        return t * self.hr_std + self.hr_mean
 
+    # ------------- training ------------
     def training_step(self, batch, batch_idx):
-        return shared_step(self, batch, "train")
+        lr = batch["lr"]
+        hr = batch["hr"]
+        hr_mask = batch["hr_mask"]
 
+        sr = self(lr)
+
+        # TIR only
+        sr = sr[:, 0:1]
+        hr = hr[:, 0:1]
+
+        loss = masked_l1(sr,hr,hr_mask )
+
+        self.log(
+            "train/loss",
+            loss,
+            prog_bar=True,
+            on_step=False,
+            on_epoch=True
+        )
+
+        return loss
+
+    # -------------- validation ------------
+    @torch.no_grad()
     def validation_step(self, batch, batch_idx):
-        return shared_step(self, batch, "val")
+        lr = batch["lr"]
+        hr = batch["hr"]
 
+        sr = self(lr)
+
+        # only TIR channel
+        sr = sr[:,0:1]
+        hr = hr[:,0:1]
+
+        # convert back to degrees C
+        sr = self.denormalize(sr)
+        hr = self.denormalize(hr)
+
+        metrics = compute_metrics(
+            module=self,
+            sr=sr,
+            hr=hr,
+            hr_mask=batch["hr_mask"],
+            stage="val",
+            water_mask=batch.get("water_mask")
+        )
+
+        for name, value in metrics.items():
+
+            if value is not None:
+                self.log(
+                    f"val/{name}",
+                    value,
+                    on_step=False,
+                    on_epoch=True
+                )
+
+    # -------------- test ------------
+    @torch.no_grad()
     def test_step(self, batch, batch_idx):
-        return shared_step(self, batch, "test")
+        lr = batch["lr"]
+        hr = batch["hr"]
 
+        sr = self(lr)
+
+        sr = sr[:,0:1]
+        hr = hr[:,0:1]
+
+        sr = self.denormalize(sr)
+        hr = self.denormalize(hr)
+
+        metrics = compute_metrics(
+            module=self,
+            sr=sr,
+            hr=hr,
+            hr_mask=batch["hr_mask"],
+            stage="test",
+            water_mask=batch.get("water_mask")
+        )
+
+        for name, value in metrics.items():
+
+            if value is not None:
+                self.log(
+                    f"test/{name}",
+                    value,
+                    on_step=False,
+                    on_epoch=True
+                )
+
+
+    # ------------- optimizer and scheduler------------
     def configure_optimizers(self):
         opt = optim.Adam(
             self.parameters(),
@@ -72,11 +161,12 @@ class EDSRModule(pl.LightningModule):
             weight_decay=1e-6
         )
         sch = optim.lr_scheduler.ReduceLROnPlateau(
-            opt, mode="max", factor=0.5, patience=5
+            opt, mode="min", factor=0.5, patience=5
         )
         return {"optimizer": opt,
-                "lr_scheduler": {"scheduler": sch, "monitor": "val_full_psnr"}}
+                "lr_scheduler": {"scheduler": sch, "monitor": "val/water_mae"}}
 
+    # Pretrained loading
     def _load_pretrained(self, path):
         if not os.path.exists(path):
             print(f"[WARNING] Pretrained not found: {path}")

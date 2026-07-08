@@ -78,14 +78,6 @@ class SRDataset(Dataset):
             wm = np.load(self.wm_dir / fname).astype(np.float32)
             water_mask = torch.from_numpy(wm)[None].float()
 
-        # return {
-        #     "lr": lr,
-        #     "hr": hr,
-        #     "hr_mask": hr_mask,
-        #     "lr_mask": lr_mask,
-        #     "water_mask": water_mask,
-        #     "fname": fname,
-        # }
         sample = {
             "lr": lr,
             "hr": hr,
