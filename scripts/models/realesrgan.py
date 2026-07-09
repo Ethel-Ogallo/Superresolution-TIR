@@ -132,13 +132,9 @@ class RealESRGANModule(pl.LightningModule):
 
         recon_loss = masked_l1(sr_tir, hr_tir, hr_mask)
 
-        # perceptual on 3-channel replication
-        sr_rgb = sr.repeat(1,3,1,1)
-        hr_rgb = hr.repeat(1,3,1,1)
+        perceptual_loss, _ = self.perceptual_loss(sr,hr)
 
-        perceptual_loss, _ = self.perceptual_loss(sr_rgb,hr_rgb)
-
-        pred_fake = self.net_d(sr_rgb)
+        pred_fake = self.net_d(sr)
 
         gan_loss_g = self.gan_loss(
             pred_fake,
@@ -157,10 +153,10 @@ class RealESRGANModule(pl.LightningModule):
 
         # ---------------- Discriminator ----------------
         self.toggle_optimizer(opt_d)
-        pred_real = self.net_d(hr_rgb)
+        pred_real = self.net_d(hr)
         loss_d_real = self.gan_loss( pred_real, True, True)
 
-        pred_fake = self.net_d(sr_rgb.detach())
+        pred_fake = self.net_d(sr.detach())
         loss_d_fake = self.gan_loss( pred_fake, False, True)
         
         loss_d = 0.5 * ( loss_d_real + loss_d_fake)
@@ -249,14 +245,22 @@ class RealESRGANModule(pl.LightningModule):
             lr=self.hparams.learning_rate,
             betas=(0.9,0.99)
         )
-
+        sch_g = optim.lr_scheduler.ReduceLROnPlateau(
+            opt_g,
+            mode="max",
+            factor=0.5,
+            patience=5
+        )
         opt_d = optim.Adam(
             self.net_d.parameters(),
             lr=self.hparams.learning_rate * self.hparams.d_lr_scale,
             betas=(0.9,0.99)
         )
 
-        return [opt_g,opt_d]
+        return (
+            [opt_g,opt_d],
+            [{"scheduler": sch_g, "monitor":"val/water_mae"}]
+        )
 
 
     # ------------------------------------------------

@@ -28,7 +28,7 @@ class EDSRModule(pl.LightningModule):
         n_blocks: int         = 16,
         data_range: float     = None,
         data_min: float       = None,
-        phase: int            = 1,
+        # phase: int            = 1,
     ):
         super().__init__()
         self.save_hyperparameters()

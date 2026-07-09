@@ -104,7 +104,7 @@ def build_model(model_name, cfg, stats, args):
         data_range    = stats["hr_data_range"],
         data_min      = stats["hr_percentiles"]["p1"],
         learning_rate = args.lr,
-        phase         = 2,
+        # phase         = 2,
     )
 
     # Pretrained paths
@@ -240,7 +240,7 @@ def run(args):
     trainer.fit(model, train_loader, val_loader)
 
     print(f"\n[INFO] Best checkpoint: {ckpt_callback.best_model_path}")
-    print(f"[INFO] Best val/water_mae:   {ckpt_callback.best_model_score:.4f}")
+    # print(f"[INFO] Best val/water_mae:   {ckpt_callback.best_model_score:.4f}")
 
     # test
     trainer.test(model, test_loader, ckpt_path=ckpt_callback.best_model_path)

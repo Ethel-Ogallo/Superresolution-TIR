@@ -16,14 +16,16 @@ def masked_l1(sr: torch.Tensor,
               hr: torch.Tensor,
               mask: torch.Tensor) -> torch.Tensor:
     """
-    L1 loss on valid pixels only.
+    Masked L1 loss.
     Args:
-        sr, hr : (B, 1, H, W) — denormalised predictions and targets
-        mask   : (B, 1, H, W) — 1 valid, 0 nodata
+        sr, hr : normalized predictions and targets
+        mask   : 1 valid, 0 nodata
+    Returns:
+        Loss value.
+
     """
     err = torch.abs(sr - hr) * mask
     return err.sum() / torch.clamp(mask.sum(), min=1.0)
-
 
 
 _spatial_gradient = SpatialGradient()
