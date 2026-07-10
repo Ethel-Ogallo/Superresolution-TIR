@@ -8,16 +8,17 @@ import lightning.pytorch as pl
 from basicsr.archs import rrdbnet_arch, discriminator_arch
 from basicsr.losses.gan_loss import GANLoss
 from basicsr.losses.basic_loss import PerceptualLoss
+from torchmetrics.image import LearnedPerceptualImagePatchSimilarity
 
-from scripts.utils.metrics import shared_step, compute_metrics
+from scripts.utils.metrics import compute_metrics
 from scripts.utils.loss import masked_l1
 
 
 # AuxProjection
 class AuxProjection(nn.Module):
-    def __init__(self, aux_chans=20, out_chans=3):
+    def __init__(self, aux_chans=23, out_chans=3):
         super().__init__()
-        in_chans = 1 + aux_chans
+        in_chans = 1 + aux_chans + 2
         self.proj = nn.Sequential(
             nn.Conv2d(in_chans, 64, 3, padding=1),
             nn.ReLU(inplace=True),
@@ -28,8 +29,8 @@ class AuxProjection(nn.Module):
             nn.Conv2d(32, out_chans, 1),
         )
 
-    def forward(self, tir, aux):
-        return self.proj(torch.cat([tir, aux], dim=1))
+    def forward(self, tir, aux, time):
+        return self.proj(torch.cat([tir, aux, time], dim=1))
 
 
 # RealESRGAN module
@@ -39,36 +40,30 @@ class RealESRGANModule(pl.LightningModule):
         self,
         pretrained_path: str      = None,
         pretrained_d_path: str    = None,
-        hr_mean: float            = 0.0,
-        hr_std: float             = 1.0,
+        hr_mean: float            = None,
+        hr_std: float             = None,
+        data_range: float         = None,
+        data_min: float           = None,
         learning_rate: float      = 1e-4,
         d_lr_scale: float         = 1.0,
         n_feats: int              = 64,
         n_blocks: int             = 23,
-        data_range: float         = None,
-        data_min: float           = None,
         lambda_perceptual: float  = 1.0,
         lambda_adversarial: float = 0.1,
-        lambda_grad: float        = 0.0,
-        lambda_water: float       = 0.0,
-        water_weight: float       = 1.0,
         adaptation_strategy: str  = "projection",
         aux_chans: int            = None,
         input_init: str           = "pretrained_mean",  # consistent with SwinIR naming
-        freeze_backbone: bool     = True,               # default True for stability
+        freeze_backbone: bool     = False,               # default True for stability
         phase: int                = 2,
         **kwargs,
     ):
         super().__init__()
         self.save_hyperparameters()
 
-        self.DATA_RANGE     = float(data_range)
-        self.DATA_MIN       = float(data_min) if data_min is not None else 0.0
+        self.DATA_RANGE     = data_range
+        self.DATA_MIN       = data_min
         self.strategy       = adaptation_strategy
         self.aux_chans      = aux_chans
-        self.lambda_grad    = lambda_grad
-        self.lambda_water   = lambda_water
-        self.water_weight   = water_weight
         self.hr_mean        = hr_mean
         self.hr_std         = hr_std
         self.freeze_backbone = freeze_backbone
@@ -79,17 +74,26 @@ class RealESRGANModule(pl.LightningModule):
         if aux_chans is None:
             raise ValueError("aux_chans must be provided")
 
+        self.accum_steps = 4
+        
         # ---------------- generator --------------------------
-        body_in_chans = (1 + aux_chans) if adaptation_strategy == "direct" else 3
-
+        # NOTE: always build with num_in_ch=3, matching the pretrained checkpoint's
+        # native shape — this is the same pattern the SPADE script uses. Expanding
+        # conv_first happens AFTER pretrained weights are loaded (see below), so the
+        # mean-based init for the new channels is derived from real pretrained
+        # features, not from a randomly-initialized layer.
         self.net_g = rrdbnet_arch.RRDBNet(
-            num_in_ch=body_in_chans,
+            num_in_ch=3,
             num_out_ch=3,
             num_feat=n_feats,
             num_block=n_blocks,
             num_grow_ch=32,
             scale=4,
         )
+
+        # load pretrained generator FIRST, while conv_first is still 3-channel
+        if pretrained_path:
+            self._load_pretrained_g(pretrained_path)
 
         # ---------------- strategy heads --------------------------
         self.proj = None
@@ -98,14 +102,12 @@ class RealESRGANModule(pl.LightningModule):
             self.proj = AuxProjection(aux_chans=aux_chans, out_chans=3)
 
         elif adaptation_strategy == "direct":
-            # expand BEFORE loading pretrained so shape matches
+            # expand AFTER loading pretrained, so the new channels' init is derived
+            # from the actual pretrained conv_first weights (fixes the previous
+            # ordering bug where expansion happened before loading).
             self._expand_direct_input_layer()
 
-        # load pretrained generator 
-        if pretrained_path:
-            self._load_pretrained_g(pretrained_path)
-
-        # output head: 3ch → 1ch 
+        # output head: 3ch → 1ch
         self.out_head = nn.Conv2d(3, 1, 1)
 
         # ---------------- discriminator --------------------------
@@ -153,19 +155,25 @@ class RealESRGANModule(pl.LightningModule):
 
         self._print_setup()
 
-    # setup print 
+
+        # ----- LPIPS Metric Initialization -----
+        self.lpips_fn = LearnedPerceptualImagePatchSimilarity(net_type='vgg', normalize=True)
+        self.lpips_fn.eval()
+        for p in self.lpips_fn.parameters(): p.requires_grad = False
+
+    # setup print
     def _print_setup(self):
         print("\n================ REALESRGAN SETUP ================")
         print(f"Strategy        : {self.strategy}")
-        print(f"Aux channels    : {self.aux_chans}")
+        print(f"Input channels  : {self.in_chans}")
         print(f"Input init      : {self.input_init}")
         print(f"Freeze backbone : {self.freeze_backbone}")
         print("==================================================\n")
 
-    # direct input layer expansion 
+    # direct input layer expansion
     def _expand_direct_input_layer(self):
         old      = self.net_g.conv_first
-        in_chans = 1 + self.aux_chans
+        in_chans = 1 + self.aux_chans + 2  # TIR + aux + time channels
 
         new = nn.Conv2d(
             in_chans,
@@ -204,7 +212,7 @@ class RealESRGANModule(pl.LightningModule):
                 new.bias.copy_(old.bias)
 
         self.net_g.conv_first = new
-        print(f"[INFO] conv_first expanded 3 → {in_chans} ({self.input_init})")
+        print(f"[INFO] conv_first expanded 3 → {in_chans} ({self.input_init}, post-pretrained-load)")
 
     # -------------- freezing ----------------
     def _apply_freezing(self):
@@ -220,27 +228,20 @@ class RealESRGANModule(pl.LightningModule):
             for p in self.net_g.conv_first.parameters():
                 p.requires_grad = True
 
-        # print("\n[INFO] FREEZING SUMMARY (generator)")
-        # for n, p in self.net_g.named_parameters():
-        #     print(f"  {n:50s} | {'TRAIN' if p.requires_grad else 'FROZEN'}")
-
     # ------------------ denormalise -----------
-    def denormalize(self, t, mean=None, std=None):
-        if mean is None or std is None:
-            return t
-        mean = torch.tensor(mean, device=t.device, dtype=t.dtype)
-        std  = torch.tensor(std,  device=t.device, dtype=t.dtype)
-        return t * std + mean
+    def denormalize(self, x):
+        return x * self.hr_std + self.hr_mean
 
     # ---------------- forward ----------------
     def forward(self, batch):
         lr  = batch["lr"]
         aux = batch.get("aux", None)
+        time  = batch["time_channels"]
 
         if self.strategy == "projection":
-            x = self.proj(lr, aux)
+            x = self.proj(lr, aux, time)
         elif self.strategy == "direct":
-            x = torch.cat([lr, aux], dim=1)
+            x = torch.cat([lr, aux, time], dim=1)
         else:
             raise ValueError(f"Unknown strategy: {self.strategy}")
 
@@ -249,79 +250,135 @@ class RealESRGANModule(pl.LightningModule):
 
     # ---------------- training step ----------------
     def training_step(self, batch, batch_idx):
-        hr_img     = batch["hr"]
-        hr_mask    = batch["hr_mask"]
-        water_mask = batch.get("water_mask", None)  # ← fixed: was missing
-
-        if water_mask is not None:
-            water_mask = water_mask.to(hr_mask.device)
-
         opt_g, opt_d = self.optimizers()
+        
+        if batch_idx % self.accum_steps == 0:
+            opt_g.zero_grad()
+            opt_d.zero_grad()
+            
+        sr, hr = self(batch), batch["hr"]
+        # sr_phys, hr_phys = sr, hr[:, 0:1]
 
-        sr_img = self(batch)
-        sr = self.denormalize(sr_img,          self.hparams.hr_mean, self.hparams.hr_std)
-        hr = self.denormalize(hr_img[:, 0:1],  self.hparams.hr_mean, self.hparams.hr_std)
-        sr = torch.nan_to_num(sr, nan=0.0)
-        hr = torch.nan_to_num(hr, nan=0.0)
+        recon_loss = masked_l1(
+                    sr[:, 0:1],
+                    hr[:, 0:1],
+                    batch["hr_mask"],
+                )
+ 
+        valid_mask = batch["hr_mask"][:, 0:1].float()
+        sr_masked = sr * valid_mask
+        hr_masked = hr[:, 0:1] * valid_mask
 
-        # repeat to 3ch for discriminator + perceptual loss
-        sr_3ch = sr_img.repeat(1, 3, 1, 1)
-        hr_3ch = hr_img[:, 0:1].repeat(1, 3, 1, 1)
-
-        # ---------------- generator step ----------------
+        # -------- Optimize Generator --------
         self.toggle_optimizer(opt_g)
 
-        recon_loss = masked_l1(sr, hr, hr_mask)
+        percep = self.perceptual_loss(sr_masked.repeat(1, 3, 1, 1), 
+                                      hr_masked.repeat(1, 3, 1, 1))[0] if self.perceptual_loss else sr.sum() * 0.0
+        gan_g = self.gan_loss(self.net_d(sr_masked.repeat(1, 3, 1, 1)), True, False) if self.hparams.lambda_adversarial > 0 else sr.sum() * 0.0
 
-        if self.perceptual_loss is not None:
-            percep_loss, _ = self.perceptual_loss(sr_3ch, hr_3ch)
-            percep_loss    = torch.nan_to_num(percep_loss, nan=0.0)
-        else:
-            percep_loss = torch.tensor(0.0, device=sr.device)
-
-        pred_fake  = self.net_d(sr_3ch)
-        gan_loss_g = self.gan_loss(pred_fake, target_is_real=True, is_disc=False)
-
-        loss_g = recon_loss + percep_loss + gan_loss_g
-        loss_g = torch.nan_to_num(loss_g, nan=0.0)
-
+        loss_g = (recon_loss + percep + gan_g) / self.accum_steps
         self.manual_backward(loss_g)
-        opt_g.step()
-        opt_g.zero_grad()
+
+        if (batch_idx + 1) % self.accum_steps == 0:
+            self.clip_gradients(opt_g, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
+            opt_g.step()
         self.untoggle_optimizer(opt_g)
 
-        # ---------------- discriminator step ----------------
-        self.toggle_optimizer(opt_d)
+        # -------- Optimize Discriminator --------
+        if self.hparams.lambda_adversarial > 0:
+            self.toggle_optimizer(opt_d)
+            loss_d = 0.5 * (
+                self.gan_loss(self.net_d(hr_masked.repeat(1, 3, 1, 1)), True, True) +
+                self.gan_loss(self.net_d(sr_masked.detach().repeat(1, 3, 1, 1)), False, True)
+            )
+            loss_d = loss_d / self.accum_steps
+            self.manual_backward(loss_d)
 
-        pred_real   = self.net_d(hr_3ch)
-        loss_d_real = self.gan_loss(pred_real,          target_is_real=True,  is_disc=True)
-        pred_fake_d = self.net_d(sr_3ch.detach())
-        loss_d_fake = self.gan_loss(pred_fake_d,        target_is_real=False, is_disc=True)
-        loss_d      = (loss_d_real + loss_d_fake) * 0.5
-        loss_d      = torch.nan_to_num(loss_d, nan=0.0)
+            if (batch_idx + 1) % self.accum_steps == 0:
+                self.clip_gradients(opt_d, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
+                opt_d.step()
+            self.untoggle_optimizer(opt_d)
+        else:
+            loss_d = torch.tensor(0.0, device=sr.device)
 
-        self.manual_backward(loss_d)
-        opt_d.step()
-        opt_d.zero_grad()
-        self.untoggle_optimizer(opt_d)
-
-        # ---------------- logging ----------------
-        self.log("train_loss",        loss_g,      on_step=True,  on_epoch=True, prog_bar=True)
-        self.log("train_loss_d",      loss_d,      on_step=True,  on_epoch=True, prog_bar=True)
-        self.log("train_recon_loss",  recon_loss,  on_step=False, on_epoch=True)
-        self.log("train_percep_loss", percep_loss, on_step=False, on_epoch=True)
-        self.log("train_gan_loss_g",  gan_loss_g,  on_step=False, on_epoch=True)
-
-        with torch.no_grad():
-            compute_metrics(self, sr, hr, hr_mask, "train", water_mask)  # ← fixed
-
+        # ----- Logs --------
+        self.log_dict({
+            "train/loss_g":     loss_g * self.accum_steps,
+            "train/recon":      recon_loss,
+            "train/perceptual": percep,
+            "train/gan_g":      gan_g,
+            "train/gan_d":      loss_d * self.accum_steps,
+        }, on_step=False, on_epoch=True, prog_bar=True)
+        
         return loss_g
 
+    # -------------- Validation Steps --------------
+    @torch.no_grad()
     def validation_step(self, batch, batch_idx):
-        return shared_step(self, batch, "val")
+        sr, hr = self(batch), batch["hr"]
+        valid_mask = batch["hr_mask"][:, 0:1].float()
+        sr_masked = sr * valid_mask
+        hr_masked = hr[:, 0:1] * valid_mask
 
+        recon_loss = masked_l1(
+                        sr[:,0:1],
+                        hr[:,0:1],
+                        batch["hr_mask"],
+                    )
+        
+        val_percep = self.perceptual_loss(sr_masked.repeat(1, 3, 1, 1), 
+                                          hr_masked.repeat(1, 3, 1, 1))[0] if self.perceptual_loss else torch.tensor(0.0, device=sr.device)
+
+        if self.hparams.lambda_adversarial > 0:
+            val_gan_g = self.gan_loss(self.net_d(sr_masked.repeat(1, 3, 1, 1)), True, False)
+            val_gan_d = 0.5 * (
+                self.gan_loss(self.net_d(hr_masked.repeat(1, 3, 1, 1)), True, True) +
+                self.gan_loss(self.net_d(sr_masked.detach().repeat(1, 3, 1, 1)), False, True)
+            )
+        else:
+            val_gan_g = val_gan_d = torch.tensor(0.0, device=sr.device)
+
+        self.log_dict({
+            "val/loss_g":     recon_loss + val_percep + val_gan_g,
+            "val/recon":      recon_loss,
+            "val/perceptual": val_percep,
+            "val/gan_g":      val_gan_g,
+            "val/gan_d":      val_gan_d,
+        }, on_step=False, on_epoch=True)
+        
+        # Computes metrics dict 
+        metrics = compute_metrics(self, 
+                                  self.denormalize(sr), 
+                                  self.denormalize(hr[:, 0:1]), 
+                                  batch["hr_mask"], 
+                                  "val", 
+                                  batch.get("water_mask"))
+        
+        self.log_dict(
+            {f"val/{k}": v for k, v in metrics.items() if v is not None},
+            on_step=False, on_epoch=True,
+        )
+        
+        sch = self.lr_schedulers()
+        if sch is not None:
+            sch.step(self.trainer.callback_metrics.get("val/water_mae", 1.0))
+
+    # -------------- Test Steps --------------
+    @torch.no_grad()
     def test_step(self, batch, batch_idx):
-        return shared_step(self, batch, "test")
+        sr, hr = self(batch), batch["hr"]
+
+        metrics = compute_metrics(self, 
+                                  self.denormalize(sr), 
+                                  self.denormalize(hr[:, 0:1]), 
+                                  batch["hr_mask"], 
+                                  "test", 
+                                  batch.get("water_mask"))
+        
+        self.log_dict(
+            {f"test/{k}": v for k, v in metrics.items() if v is not None},
+            on_step=False, on_epoch=True,
+        )
 
     # ---------------- optimiser ----------------
     def configure_optimizers(self):
@@ -338,20 +395,18 @@ class RealESRGANModule(pl.LightningModule):
             g_params,
             lr=self.hparams.learning_rate,
             betas=(0.9, 0.99),
-            weight_decay=1e-6,
         )
         opt_d = optim.Adam(
             self.net_d.parameters(),
             lr=self.hparams.learning_rate * self.hparams.d_lr_scale,
             betas=(0.9, 0.99),
-            weight_decay=1e-6,
         )
         sch_g = optim.lr_scheduler.ReduceLROnPlateau(
-            opt_g, mode="max", factor=0.5, patience=5
+            opt_g, mode="min", factor=0.5, patience=5
         )
         return (
             [opt_g, opt_d],
-            [{"scheduler": sch_g, "monitor": "val_full_psnr"}],
+            [{"scheduler": sch_g, "monitor": "val/water_mae"}],
         )
 
     # ---------------- pretrained loading ----------------

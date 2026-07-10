@@ -1,11 +1,9 @@
 #!/bin/bash -l
-#SBATCH --job-name=sisr
+#SBATCH --job-name=aux_sisr
+#SBATCH -p longrun
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=32G
-# #SBATCH --output=logs/01_fusion_aux_%j.log
-# #SBATCH --output=logs/dir_aux_%j.log
-
 # -------- Environment --------
 export WANDB_API_KEY="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"   # W&B API key for non-interactive login
 export WANDB_DIR=/tmp
@@ -17,41 +15,38 @@ conda activate sisr
 cd /share/castor/home/e2406751/Superresolution-TIR
 # mkdir -p logs checkpoints/dev_v3
 
-python -m scripts.training.train \
-    --model swinir \
-    --lr 1e-4 \
-    --batch_size 2 \
-    --max_epochs 100 \
-    --patience 30 \
-    --num_workers 4 \
-    --use_aux 1 \
-    --lambda_grad 1.0 \
-    --lambda_water 0.5 \
-    --water_weight 2.0 \
-    --adaptation_strategy direct \
-    --input_init pretrained_mean \
-    --freeze_backbone 1 \
-    --freeze_mode body \
-    --project TIR_sisr \
-    --run_name full_freeze \
-    --group fixed-aux_dev
-
-# GAN training
-# python -m scripts.training.train_gan \
+# echo "projection input with aux channels"
+# python -m scripts.training.train \
+#     --model realesrgan \
 #     --lr 1e-4 \
-#     --batch_size 2 \
+#     --batch_size 4 \
 #     --max_epochs 100 \
 #     --patience 30 \
 #     --num_workers 4 \
 #     --use_aux 1 \
-#     --lambda_grad 0.0 \
-#     --lambda_water 0.0 \
-#     --water_weight 1.0 \
 #     --adaptation_strategy projection \
-#     --input_init pretrained_mean \
-#     --freeze_backbone 0 \
-#     --run_name 02_proj_full \
-#     --group GAN
+#     --freeze_backbone 0\
+#     --freeze_mode none \
+#     --project TIR_sisr_final* \
+#     --run_name projected \
+#     --group aux_ablation
+
+echo "direct aux input with pretrained mean"
+python -m scripts.training.train \
+    --model realesrgan \
+    --lr 1e-4 \
+    --batch_size 4 \
+    --max_epochs 100 \
+    --patience 30 \
+    --num_workers 4 \
+    --use_aux 1 \
+    --adaptation_strategy direct \
+    --input_init pretrained_mean \
+    --freeze_backbone 0\
+    --freeze_mode none \
+    --project TIR_sisr_final* \
+    --run_name direct* \
+    --group aux_ablation
 
 # # direct + pretrained mean — frozen  
 # python -m scripts.training.train_realesrgan_aux \

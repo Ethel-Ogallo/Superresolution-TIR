@@ -11,6 +11,15 @@ from kornia.filters import SpatialGradient
 def masked_l1(sr: torch.Tensor,
               hr: torch.Tensor,
               mask: torch.Tensor) -> torch.Tensor:
+    """
+    Masked L1 loss.
+    Args:
+        sr, hr : normalized predictions and targets
+        mask   : 1 valid, 0 nodata
+    Returns:
+        Loss value.
+
+    """
     err = torch.abs(sr - hr) * mask
     return err.sum() / torch.clamp(mask.sum(), min=1.0)
 
@@ -22,7 +31,15 @@ _spatial_gradient = SpatialGradient()
 def gradient_loss(sr: torch.Tensor,
                   hr: torch.Tensor,
                   mask: torch.Tensor) -> torch.Tensor:
+    """
+    Gradient loss.
+    Args:
+        sr, hr : normalized predictions and targets
+        mask   : 1 valid, 0 nodata
+    Returns:
+        Loss value.
 
+    """
     sr_g = _spatial_gradient(sr)
     hr_g = _spatial_gradient(hr)
 
@@ -35,44 +52,44 @@ def gradient_loss(sr: torch.Tensor,
 
 # ----------------- Water-weighted loss -----------------
 
-def water_weighted_loss(sr: torch.Tensor,
-                        hr: torch.Tensor,
-                        hr_mask: torch.Tensor,
-                        water_mask: torch.Tensor,
-                        water_weight: float = 2.0,
-                        land_weight: float = 1.0) -> torch.Tensor:
+# def water_weighted_loss(sr: torch.Tensor,
+#                         hr: torch.Tensor,
+#                         hr_mask: torch.Tensor,
+#                         water_mask: torch.Tensor,
+#                         water_weight: float = 2.0,
+#                         land_weight: float = 1.0) -> torch.Tensor:
 
-    error = torch.abs(sr - hr)
+#     error = torch.abs(sr - hr)
 
-    water_mask = (hr_mask * water_mask).float()
-    land_mask  = (hr_mask * (1.0 - water_mask)).float()
+#     water_mask = (hr_mask * water_mask).float()
+#     land_mask  = (hr_mask * (1.0 - water_mask)).float()
 
-    loss_water = (error * water_mask).sum() / torch.clamp(water_mask.sum(), min=1.0)
-    loss_land  = (error * land_mask).sum() / torch.clamp(land_mask.sum(), min=1.0)
+#     loss_water = (error * water_mask).sum() / torch.clamp(water_mask.sum(), min=1.0)
+#     loss_land  = (error * land_mask).sum() / torch.clamp(land_mask.sum(), min=1.0)
 
-    return water_weight * loss_water + land_weight * loss_land
+#     return water_weight * loss_water + land_weight * loss_land
 
 
-# ----------------- FINAL COMBINED LOSS -----------------
+# ----------------- COMBINED LOSS -----------------
 
-def combined_loss(sr: torch.Tensor,
-                  hr: torch.Tensor,
-                  hr_mask: torch.Tensor,
-                  water_mask: torch.Tensor = None,
-                  lambda_grad: float = 0.1,
-                  lambda_water: float = 0.5,
-                  water_weight: float = 2.0,
-                  land_weight: float = 1.0) -> torch.Tensor:
+# def combined_loss(sr: torch.Tensor,
+#                   hr: torch.Tensor,
+#                   hr_mask: torch.Tensor,
+#                   water_mask: torch.Tensor = None,
+#                   lambda_grad: float = 0.1,
+#                   lambda_water: float = 0.5,
+#                   water_weight: float = 2.0,
+#                   land_weight: float = 1.0) -> torch.Tensor:
 
-    loss = masked_l1(sr, hr, hr_mask)
+#     loss = masked_l1(sr, hr, hr_mask)
 
-    loss = loss + lambda_grad * gradient_loss(sr, hr, hr_mask)
+#     loss = loss + lambda_grad * gradient_loss(sr, hr, hr_mask)
 
-    if water_mask is not None:
-        loss = loss + lambda_water * water_weighted_loss(
-            sr, hr, hr_mask, water_mask,
-            water_weight=water_weight,
-            land_weight=land_weight
-        )
+#     if water_mask is not None:
+#         loss = loss + lambda_water * water_weighted_loss(
+#             sr, hr, hr_mask, water_mask,
+#             water_weight=water_weight,
+#             land_weight=land_weight
+#         )
 
-    return loss
+#     return loss
