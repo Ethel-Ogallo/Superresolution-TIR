@@ -27,8 +27,8 @@ python -m scripts.training.train \
     --adaptation_strategy projection \
     --freeze_backbone 0\
     --freeze_mode none \
-    --project TIR_sisr_final* \
-    --run_name projected \
+    --project TIR_sisr_final \
+    --run_name projected2 \
     --group aux_ablation
 
 echo "direct aux input with pretrained mean"
@@ -44,8 +44,8 @@ python -m scripts.training.train \
     --input_init pretrained_mean \
     --freeze_backbone 0\
     --freeze_mode none \
-    --project TIR_sisr_final* \
-    --run_name direct \
+    --project TIR_sisr_final \
+    --run_name direct2 \
     --group aux_ablation
 
 # # direct + pretrained mean — frozen  

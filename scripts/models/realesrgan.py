@@ -256,11 +256,11 @@ class RealESRGANModule(pl.LightningModule):
             opt_d.zero_grad()
             
         sr, hr = self(batch), batch["hr"]
-        # sr_phys, hr_phys = sr, hr[:, 0:1]
+        sr_phys, hr_phys = self.denormalize(sr), self.denormalize(hr[:, 0:1])
 
         recon_loss = masked_l1(
-                    sr[:, 0:1],
-                    hr[:, 0:1],
+                    sr_phys,
+                    hr_phys,
                     batch["hr_mask"],
                 )
  
@@ -320,8 +320,8 @@ class RealESRGANModule(pl.LightningModule):
         hr_masked = hr[:, 0:1] * valid_mask
 
         recon_loss = masked_l1(
-                        sr[:,0:1],
-                        hr[:,0:1],
+                        self.denormalize(sr), 
+                        self.denormalize(hr[:, 0:1]),
                         batch["hr_mask"],
                     )
         
