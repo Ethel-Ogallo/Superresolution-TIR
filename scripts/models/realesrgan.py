@@ -165,7 +165,6 @@ class RealESRGANModule(pl.LightningModule):
     def _print_setup(self):
         print("\n================ REALESRGAN SETUP ================")
         print(f"Strategy        : {self.strategy}")
-        print(f"Input channels  : {self.in_chans}")
         print(f"Input init      : {self.input_init}")
         print(f"Freeze backbone : {self.freeze_backbone}")
         print("==================================================\n")
