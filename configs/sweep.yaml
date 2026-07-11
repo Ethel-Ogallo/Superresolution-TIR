@@ -1,17 +1,17 @@
 # configs/sweep.yaml
 program: scripts/training/train.py
-project: TIR_SISR_v3   
-method: grid       
+project: TIR_SISR_final   
+method: bayes       
 metric:
   name: val/water_mae
   goal: minimize    
 
 parameters:
   # --- Fixed Arguments for Training Stability ---
-  # lr:
-  #   value: 1e-4
-  # d_lr_scale:
-  #   value: 1.0
+  lr:
+    value: 1e-4
+  d_lr_scale:
+    value: 1.0
   batch_size:
     value: 4
   max_epochs:
@@ -23,79 +23,56 @@ parameters:
   seed:
     value: 42
   use_spade:
-    value: true
+    value: false
   group:
-    value: "sweep_v2"
+    value: "sweep_wt"
 
-  # lambda_nw:
-  #   distribution: uniform
-  #   min: 0.5
-  #   max: 1.0
+  # --- Hyperparameters to Sweep ---
+  lambda_nw:
+    distribution: uniform
+    min: 0.5
+    max: 1.0
 
-  # lambda_w:
-  #   distribution: uniform
-  #   min: 1.5
-  #   max: 3.0
+  lambda_w:
+    distribution: uniform
+    min: 1.5
+    max: 3.0
 
-  # lambda_g:
-  #   distribution: uniform
-  #   min: 0.1
-  #   max: 0.4
+  lambda_g:
+    distribution: uniform
+    min: 0.1
+    max: 0.4
 
-  # lambda_perceptual:
-  #   distribution: log_uniform_values
-  #   min: 0.3
-  #   max: 1.0
+  lambda_perceptual:
+    distribution: log_uniform_values
+    min: 0.3
+    max: 1.0
 
-  # lambda_adversarial:
-  #   distribution: log_uniform_values
-  #   min: 0.02
-  #   max: 0.1
+  lambda_adversarial:
+    distribution: log_uniform_values
+    min: 0.02
+    max: 0.1
   
   # --- Fixed, Optimized Loss Weights ---
-  lambda_nw:
-    value: 0.8123
-  lambda_w:
-    value: 1.7126
-  lambda_g:
-    value: 0.3207
-  lambda_adversarial:
-    value: 0.0247
-  lambda_perceptual:
-    value: 0.7037
+  # lambda_nw:
+  #   value: 0.8123
+  # lambda_w:
+  #   value: 1.7126
+  # lambda_g:
+  #   value: 0.3207
+  # lambda_adversarial:
+  #   value: 0.0247
+  # lambda_perceptual:
+  #   value: 0.7037
     
   # --- Hyperparameters to Sweep (Discrete Cross-Matrix) ---
-  lr:
-      values: [1e-4, 5e-5]
+  # lr:
+  #     values: [1e-4, 5e-5]
 
-  d_lr_scale:
-    values: [1.0, 0.4, 0.2, 0.1]
+  # d_lr_scale:
+  #   values: [1.0, 0.4, 0.2, 0.1]
          
-  # --- Hyperparameters to Sweep ---
-# parameters:
-#   lambda_nw:
-#     distribution: uniform
-#     min: 0.5
-#     max: 1.0
+  
 
-#   lambda_w:
-#     distribution: uniform
-#     min: 1.5
-#     max: 3.0
-
-#   lambda_g:
-#     distribution: uniform
-#     min: 0.1
-#     max: 0.4
-
-#   lambda_perceptual:
-#     distribution: log_uniform_values
-#     min: 0.3
-#     max: 1.0
-
-#   lambda_adversarial:
-#     distribution: log_uniform_values
-#     min: 0.02
-#     max: 0.1
 
 

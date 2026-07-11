@@ -31,7 +31,7 @@ PATCHES_DIR = BASE / "data/processed/patches"
 CONFIGS_DIR = BASE / "configs"
 STATS_PATH = PATCHES_DIR / "stats.json"
 PRETRAINED = BASE / "data/pretrained"
-CKPT_DIR = BASE / "checkpoints/gan_v6"
+CKPT_DIR = BASE / "checkpoints/gan_final"
 CKPT_DIR.mkdir(parents=True, exist_ok=True)
 
 
