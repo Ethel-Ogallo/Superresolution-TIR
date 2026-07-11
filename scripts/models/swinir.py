@@ -82,7 +82,11 @@ class SwinIRModule(pl.LightningModule):
         sr = sr[:, 0:1]
         hr = hr[:, 0:1]
 
-        loss = masked_l1(sr,hr,hr_mask )
+        # denormalize to physical (°C) space before computing loss
+        sr_phys = self.denormalize(sr)
+        hr_phys = self.denormalize(hr)
+
+        loss = masked_l1(sr_phys, hr_phys, hr_mask)
 
         self.log(
             "train/loss",

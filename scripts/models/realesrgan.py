@@ -123,9 +123,8 @@ class RealESRGANModule(pl.LightningModule):
 
         sr = self(lr)
 
-        # only thermal channel
-        sr_tir = sr[:,0:1]
-        hr_tir = hr[:,0:1]
+        # only thermal channel: denormalize to physical (°C) space before computing loss
+        sr_tir, hr_tir = self.denormalize(sr[:,0:1]), self.denormalize(hr[:, 0:1])
 
         # ---------------- Generator ----------------
         self.toggle_optimizer(opt_g)
