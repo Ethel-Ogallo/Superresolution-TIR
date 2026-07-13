@@ -1,18 +1,6 @@
-# scripts/training/train_realesrgan_aux.py
+# scripts/training/train_gan.py
 """
-train_realesrgan_aux.py — Phase 3 aux experiments for RealESRGAN.
-
-Usage:
-    # projection strategy
-    python -m scripts.training.train_realesrgan_aux \
-        --adaptation_strategy projection \
-        --run_name realesrgan_projection_aux
-
-    # direct strategy with pretrained mean init
-    python -m scripts.training.train_realesrgan_aux \
-        --adaptation_strategy direct \
-        --input_init pretrained_mean \
-        --run_name realesrgan_direct_mean_aux
+train_realesrgan_aux.py
 """
 
 import argparse
@@ -79,15 +67,15 @@ def build_model(cfg, stats, args, aux_chans):
         aux_chans         = aux_chans,
         adaptation_strategy = args.adaptation_strategy,
         input_init        = args.input_init,
-        lambda_grad       = args.lambda_grad,
-        lambda_water      = args.lambda_water,
-        water_weight      = args.water_weight,
+        # lambda_grad       = args.lambda_grad,
+        # lambda_water      = args.lambda_water,
+        # water_weight      = args.water_weight,
         freeze_backbone   = bool(args.freeze_backbone),
         hr_mean           = stats["hr"]["mean"],
         hr_std            = stats["hr"]["std"],
         data_range        = stats["hr_data_range"],
         data_min          = stats["hr_percentiles"]["p1"],
-        phase             = 3,
+        # phase             = 3,
     )
 
 
@@ -96,7 +84,7 @@ def run(args):
     set_seed(args.seed)
 
     print(f"\n{'═'*60}")
-    print(f"RealESRGAN — Phase 3 Aux | strategy: {args.adaptation_strategy}")
+    print(f"RealESRGAN — Aux | strategy: {args.adaptation_strategy}")
     print(f"{'═'*60}\n")
 
     with open(STATS_PATH) as f:
@@ -128,9 +116,21 @@ def run(args):
         transform      = None,
     )
 
+    test_ds = SRDataset(
+        split          = "test",
+        patches_dir    = PATCHES_DIR,
+        stats_path     = STATS_PATH,
+        use_aux        = True,
+        use_water_mask = True,
+        aux_dir        = str(PATCHES_DIR / "test" / "AUX"),
+        repeat_channels= False,
+        transform      = None,
+    )
+
     loader_kw    = dict(num_workers=args.num_workers, pin_memory=True)
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,  **loader_kw)
     val_loader   = DataLoader(val_ds,   batch_size=args.batch_size, shuffle=False, **loader_kw)
+    test_loader  = DataLoader(test_ds,   batch_size=args.batch_size, shuffle=False, **loader_kw) 
 
     # aux channels 
     sample    = train_ds[0]
@@ -158,9 +158,9 @@ def run(args):
     # checkpointing 
     ckpt = ModelCheckpoint(
         dirpath    = CKPT_DIR,
-        filename   = f"{name}_{{epoch:02d}}_{{val_full_psnr:.4f}}",
-        monitor    = "val_full_psnr",
-        mode       = "max",
+        filename   = f"{name}_{{epoch:02d}}_{{val/water_mae:.4f}}",
+        monitor    = "val/water_mae",
+        mode       = "min",
         save_top_k = 1,
         verbose    = True,
     )
@@ -168,8 +168,8 @@ def run(args):
     callbacks = [
         ckpt,
         EarlyStopping(
-            monitor = "val_full_psnr",
-            mode    = "max",
+            monitor = "val/water_mae",
+            mode    = "min",
             patience= args.patience,
             verbose = True,
         ),
@@ -192,7 +192,7 @@ def run(args):
     trainer.fit(model, train_loader, val_loader)
     print(f"\n[INFO] Training time: {timedelta(seconds=int(time.time()-t0))}")
     print(f"[INFO] Best checkpoint: {ckpt.best_model_path}")
-    print(f"[INFO] Best val_full_psnr: {ckpt.best_model_score:.4f}")
+    print(f"[INFO] Best val/water_mae: {ckpt.best_model_score:.4f}")
 
     wandb.finish()
     return ckpt.best_model_path

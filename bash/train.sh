@@ -16,8 +16,7 @@ cd /share/castor/home/e2406751/Superresolution-TIR
 # mkdir -p logs checkpoints/dev_v3
 
 # echo "projection input with aux channels"
-python -m scripts.training.train \
-    --model realesrgan \
+python -m scripts.training.train_gan \
     --lr 1e-4 \
     --batch_size 4 \
     --max_epochs 100 \
@@ -26,14 +25,12 @@ python -m scripts.training.train \
     --use_aux 1 \
     --adaptation_strategy projection \
     --freeze_backbone 0\
-    --freeze_mode none \
     --project TIR_sisr_final \
-    --run_name projected2 \
+    --run_name projected3 \
     --group aux_ablation
 
 echo "direct aux input with pretrained mean"
-python -m scripts.training.train \
-    --model realesrgan \
+python -m scripts.training.train_gan \
     --lr 1e-4 \
     --batch_size 4 \
     --max_epochs 100 \
@@ -43,9 +40,8 @@ python -m scripts.training.train \
     --adaptation_strategy direct \
     --input_init pretrained_mean \
     --freeze_backbone 0\
-    --freeze_mode none \
     --project TIR_sisr_final \
-    --run_name direct2 \
+    --run_name direct3 \
     --group aux_ablation
 
 # # direct + pretrained mean — frozen  

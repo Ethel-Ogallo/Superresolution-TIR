@@ -74,12 +74,11 @@ class RealESRGANModule(pl.LightningModule):
         if aux_chans is None:
             raise ValueError("aux_chans must be provided")
 
-        self.accum_steps = 4
+        # self.accum_steps = 4
         
         # ---------------- generator --------------------------
-        # NOTE: always build with num_in_ch=3, matching the pretrained checkpoint's
-        # native shape — this is the same pattern the SPADE script uses. Expanding
-        # conv_first happens AFTER pretrained weights are loaded (see below), so the
+        # NOTE: always build with num_in_ch=3, matching the pretrained checkpoint's native shape Expanding
+        # conv_first happens AFTER pretrained weights are loaded, so the
         # mean-based init for the new channels is derived from real pretrained
         # features, not from a randomly-initialized layer.
         self.net_g = rrdbnet_arch.RRDBNet(
@@ -166,7 +165,6 @@ class RealESRGANModule(pl.LightningModule):
         print("\n================ REALESRGAN SETUP ================")
         print(f"Strategy        : {self.strategy}")
         print(f"Input init      : {self.input_init}")
-        print(f"Freeze backbone : {self.freeze_backbone}")
         print("==================================================\n")
 
     # direct input layer expansion
@@ -251,9 +249,9 @@ class RealESRGANModule(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         opt_g, opt_d = self.optimizers()
         
-        if batch_idx % self.accum_steps == 0:
-            opt_g.zero_grad()
-            opt_d.zero_grad()
+        # if batch_idx % self.accum_steps == 0:
+        #     opt_g.zero_grad()
+        #     opt_d.zero_grad()
             
         sr, hr = self(batch), batch["hr"]
         sr_phys, hr_phys = self.denormalize(sr), self.denormalize(hr[:, 0:1])
@@ -275,12 +273,15 @@ class RealESRGANModule(pl.LightningModule):
                                       hr_masked.repeat(1, 3, 1, 1))[0] if self.perceptual_loss else sr.sum() * 0.0
         gan_g = self.gan_loss(self.net_d(sr_masked.repeat(1, 3, 1, 1)), True, False) if self.hparams.lambda_adversarial > 0 else sr.sum() * 0.0
 
-        loss_g = (recon_loss + percep + gan_g) / self.accum_steps
+        loss_g = (recon_loss + percep + gan_g) #/ self.accum_steps
         self.manual_backward(loss_g)
 
-        if (batch_idx + 1) % self.accum_steps == 0:
-            self.clip_gradients(opt_g, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
-            opt_g.step()
+        # if (batch_idx + 1) % self.accum_steps == 0:
+        #     self.clip_gradients(opt_g, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
+        #     opt_g.step()
+
+        opt_g.step()
+        opt_g.zero_grad()
         self.untoggle_optimizer(opt_g)
 
         # -------- Optimize Discriminator --------
@@ -290,23 +291,25 @@ class RealESRGANModule(pl.LightningModule):
                 self.gan_loss(self.net_d(hr_masked.repeat(1, 3, 1, 1)), True, True) +
                 self.gan_loss(self.net_d(sr_masked.detach().repeat(1, 3, 1, 1)), False, True)
             )
-            loss_d = loss_d / self.accum_steps
+            # loss_d = loss_d / self.accum_steps
             self.manual_backward(loss_d)
 
-            if (batch_idx + 1) % self.accum_steps == 0:
-                self.clip_gradients(opt_d, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
-                opt_d.step()
+            # if (batch_idx + 1) % self.accum_steps == 0:
+            #     self.clip_gradients(opt_d, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
+            #     opt_d.step()
+            opt_d.step()
+            opt_d.zero_grad()
             self.untoggle_optimizer(opt_d)
         else:
             loss_d = torch.tensor(0.0, device=sr.device)
 
         # ----- Logs --------
         self.log_dict({
-            "train/loss_g":     loss_g * self.accum_steps,
+            "train/loss_g":     loss_g, #* self.accum_steps,
             "train/recon":      recon_loss,
             "train/perceptual": percep,
             "train/gan_g":      gan_g,
-            "train/gan_d":      loss_d * self.accum_steps,
+            "train/gan_d":      loss_d, #* self.accum_steps,
         }, on_step=False, on_epoch=True, prog_bar=True)
         
         return loss_g
@@ -358,6 +361,7 @@ class RealESRGANModule(pl.LightningModule):
             on_step=False, on_epoch=True,
         )
         
+    def on_validation_epoch_end(self):
         sch = self.lr_schedulers()
         if sch is not None:
             sch.step(self.trainer.callback_metrics.get("val/water_mae", 1.0))
