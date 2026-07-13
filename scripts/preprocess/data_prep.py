@@ -264,7 +264,7 @@ for hr_path in sorted(HR_DIR.glob("*.tif")):
             # Pad QA raster array (use 0/clear for padded pixels to prevent cloud-skipping anomalies)
             qa_data = np.pad(qa_data, ((0, pad_rows), (0, 0)), mode='constant', constant_values=0)
             
-            print(f"  --> Virtual Padding Applied: Padded bottom with {pad_rows} rows out to row {max_required_row}")
+            print(f"Virtual Padding Applied: Padded bottom with {pad_rows} rows out to row {max_required_row}")
 
         # Convert B10 DN → Celsius using MTL values
         b10_valid = (b10_data > 0)

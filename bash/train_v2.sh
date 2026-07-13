@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --job-name=train
+#SBATCH --job-name=spade
 #SBATCH -p longrun
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=6
@@ -24,24 +24,24 @@ python -m scripts.training.train \
     --batch_size 4 \
     --patience 20 \
     --num_workers 4 \
-    --lambda_nw 0.8123 \
-    --lambda_w 1.7126 \
-    --lambda_g 0.3207 \
-    --lambda_adversarial 0.0247 \
-    --lambda_perceptual 0.7037 \
+    --lambda_nw 0.6030 \
+    --lambda_w 1.7601 \
+    --lambda_g 0.2598 \
+    --lambda_adversarial 0.0708 \
+    --lambda_perceptual 0.3642 \
     --d_lr_scale 1.0 \
     --use_spade true \
-    --run_name "exp4_sans_aug" \
+    --run_name "exp2" \
     --group "spade" \
-    --project TIR_SISR_v3 \
+    --project TIR_sisr_final \
 
 # lambda_adversarial:
-# 0.024693810190593295
+# 0.0707898130215005
 # lambda_g:
-# 0.3207001143579563
+# 0.25982136202473927
 # lambda_nw:
-# 0.8122826678726971
+# 0.603015214572084
 # lambda_perceptual:
-# 0.7036859701800203
+# 0.3642004331550006
 # lambda_w:
-# 1.712567198414096
+# 1.7600751516568551
