@@ -18,43 +18,43 @@ cd /share/castor/home/e2406751/Superresolution-TIR
 # mkdir -p logs checkpoints/phase2.1
 
 # EDSR 
-echo "Training EDSR model..."
-python -m scripts.training.train \
-    --model edsr \
-    --lr 1e-4 \
-    --batch_size 4 \
-    --max_epochs 100 \
-    --patience 20 \
-    --num_workers 4 \
-    --project TIR_sisr_final \
-    --run_name edsr\
-    --group benchmark2
+# echo "Training EDSR model..."
+# python -m scripts.training.train \
+#     --model edsr \
+#     --lr 1e-4 \
+#     --batch_size 4 \
+#     --max_epochs 100 \
+#     --patience 20 \
+#     --num_workers 4 \
+#     --project TIR_sisr_final \
+#     --run_name edsr\
+#     --group benchmark2
 
-# SWINIR
-echo "Training SWINIR model..."
-python -m scripts.training.train \
-    --model swinir \
-    --lr 1e-4 \
-    --batch_size 4 \
-    --max_epochs 100 \
-    --patience 20 \
-    --num_workers 4 \
-    --project TIR_sisr_final \
-    --run_name swinir\
-    --group benchmark2
+# # SWINIR
+# echo "Training SWINIR model..."
+# python -m scripts.training.train \
+#     --model swinir \
+#     --lr 1e-4 \
+#     --batch_size 4 \
+#     --max_epochs 100 \
+#     --patience 20 \
+#     --num_workers 4 \
+#     --project TIR_sisr_final \
+#     --run_name swinir\
+#     --group benchmark2
 
-# HAT
-echo "Training HAT model..."
-python -m scripts.training.train \
-    --model hat \
-    --lr 1e-4 \
-    --batch_size 4 \
-    --max_epochs 100 \
-    --patience 20 \
-    --num_workers 4 \
-    --project TIR_sisr_final \
-    --run_name hat\
-    --group benchmark2
+# # HAT
+# echo "Training HAT model..."
+# python -m scripts.training.train \
+#     --model hat \
+#     --lr 1e-4 \
+#     --batch_size 4 \
+#     --max_epochs 100 \
+#     --patience 20 \
+#     --num_workers 4 \
+#     --project TIR_sisr_final \
+#     --run_name hat\
+#     --group benchmark2
 
 # REALESGRAN
 echo "Training REALESGRAN model..."
@@ -66,5 +66,5 @@ python -m scripts.training.train \
     --patience 20 \
     --num_workers 4 \
     --project TIR_sisr_final \
-    --run_name realesrgan\
+    --run_name realesrgan2\
     --group benchmark2

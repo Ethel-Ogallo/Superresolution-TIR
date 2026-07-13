@@ -205,6 +205,10 @@ class RealESRGANModule(pl.LightningModule):
             },
             on_epoch=True
         )
+    def on_validation_epoch_end(self):
+        sch = self.lr_schedulers()
+        if sch is not None:
+            sch.step(self.trainer.callback_metrics.get("val/water_mae", 1.0))
 
     # ------------------------------------------------
     # Test
@@ -246,7 +250,7 @@ class RealESRGANModule(pl.LightningModule):
         )
         sch_g = optim.lr_scheduler.ReduceLROnPlateau(
             opt_g,
-            mode="max",
+            mode="min",
             factor=0.5,
             patience=5
         )
