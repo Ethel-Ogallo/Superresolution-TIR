@@ -251,6 +251,7 @@ class RealESRGANModule(pl.LightningModule):
             on_step=False, on_epoch=True,
         )
         
+    def on_validation_epoch_end(self):
         sch = self.lr_schedulers()
         if sch is not None:
             sch.step(self.trainer.callback_metrics.get("val/water_mae", 1.0))
@@ -283,8 +284,12 @@ class RealESRGANModule(pl.LightningModule):
         opt_d = optim.Adam(self.net_d.parameters(), 
                            lr=self.hparams.learning_rate * self.hparams.d_lr_scale, 
                            betas=(0.5, 0.999))
-        
-        return [opt_g, opt_d]
+        sch_g = optim.lr_scheduler.ReduceLROnPlateau(opt_g, mode="min", factor=0.5, patience=5)
+    
+        return ([opt_g, opt_d],
+                [{"scheduler": sch_g, "monitor": "val/water_mae"}],
+            )
+   
 
     # -------------- Helper Functions --------------    
     def denormalize(self, x):

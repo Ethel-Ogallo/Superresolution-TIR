@@ -25,7 +25,7 @@ parameters:
   use_spade:
     value: false
   group:
-    value: "sweep_wt"
+    value: "sweep_wt2"
 
   # --- Hyperparameters to Sweep ---
   lambda_nw:
