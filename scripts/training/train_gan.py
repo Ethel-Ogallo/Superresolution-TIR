@@ -193,7 +193,9 @@ def run(args):
     print(f"\n[INFO] Training time: {timedelta(seconds=int(time.time()-t0))}")
     print(f"[INFO] Best checkpoint: {ckpt.best_model_path}")
     print(f"[INFO] Best val/water_mae: {ckpt.best_model_score:.4f}")
-
+    
+    trainer.test(model, test_loader, ckpt_path=ckpt.best_model_path)
+    
     wandb.finish()
     return ckpt.best_model_path
 
