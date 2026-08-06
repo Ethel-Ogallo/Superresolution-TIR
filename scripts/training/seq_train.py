@@ -1,4 +1,5 @@
-# scripts/training/train_vsr.py
+# scripts/training/seq_train.py
+# spynet frozen
 
 import argparse
 import json
@@ -13,25 +14,17 @@ import wandb
 from lightning.pytorch import Trainer
 from lightning.pytorch.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
-from torch.utils.data import DataLoader
 
-from scripts.utils.seq_dataset import SRDataset
+from scripts.utils.seq_dataset import SRSequenceDataset
 from scripts.models.basicvsrplus import BasicVSRModule
 
-# ============================================================
-# PATHS
-# ============================================================
+
 BASE = Path("/share/home/e2406751/Superresolution-TIR")
-PATCHES_DIR = BASE / "data/processed/seq_patches"
-CONFIGS_DIR = BASE / "configs"
+PATCHES_DIR = BASE / "data/processed/seq_patches2"
 STATS_PATH = BASE / "data/processed/patches/stats.json"
-PRETRAINED = BASE / "data/pretrained"
+DEFAULT_CONFIG_PATH = BASE / "configs/basicvsrplus.yaml"
 CKPT_DIR = BASE / "checkpoints/vsr"
 CKPT_DIR.mkdir(parents=True, exist_ok=True)
-
-REQUIRED_STATS_KEYS = [
-    ("hr", "mean"), ("hr", "std"),
-]
 
 
 def set_seed(seed=42):
@@ -41,151 +34,144 @@ def set_seed(seed=42):
     torch.cuda.manual_seed_all(seed)
 
 
-def load_config(name):
-    with open(CONFIGS_DIR / f"{name}.yaml") as f:
+def load_stats():
+    with open(STATS_PATH) as f:
+        return json.load(f)
+
+
+def load_config(config_path):
+    path = Path(config_path)
+    if not path.exists():
+        print(f"[WARNING] Config file not found at {path}. Proceeding without YAML config.")
+        return {}
+    with open(path, "r") as f:
         return yaml.safe_load(f)
 
 
-def load_stats():
-    if not STATS_PATH.exists():
-        raise FileNotFoundError(f"stats.json not found at {STATS_PATH}")
-    stats = json.load(open(STATS_PATH))
-
-    for group, key in REQUIRED_STATS_KEYS:
-        if group not in stats or key not in stats[group]:
-            raise KeyError(f"stats.json missing required key: {group}.{key}")
-
-    if "hr_data_range" not in stats:
-        raise KeyError(
-            "stats.json missing 'hr_data_range' -- required for PSNR/SSIM/LPIPS "
-            "normalization in compute_metrics. Check how stats.json is generated."
-        )
-    if "hr_percentiles" not in stats or "p1" not in stats.get("hr_percentiles", {}):
-        raise KeyError(
-            "stats.json missing 'hr_percentiles.p1' -- required as DATA_MIN in "
-            "compute_metrics. Check how stats.json is generated."
-        )
-    return stats
-
-
-def build_model(stats, cfg, args):
-    arch = cfg.get("architecture", {})
-    pretrained_cfg = cfg.get("pretrained", {})
-
-    spynet_path = PRETRAINED / pretrained_cfg.get("spynet_filename", "")
-    backbone_path = PRETRAINED / pretrained_cfg.get("backbone_filename", "")
-
-    if not spynet_path.exists():
-        raise FileNotFoundError(f"SpyNet pretrained weights not found at {spynet_path}")
-    if not backbone_path.exists():
-        raise FileNotFoundError(f"BasicVSR++ pretrained weights not found at {backbone_path}")
+def build_model(stats, args, config):
+    pretrained_dir = BASE / "data/pretrained"
+    pretrained_cfg = config.get("pretrained", {})
+    backbone_file = pretrained_cfg.get("backbone_filename")
+    spynet_file = pretrained_cfg.get("spynet_filename")
+    pretrained_path = (str(pretrained_dir / backbone_file) if backbone_file else None )
+    spynet_path = (str(pretrained_dir / spynet_file) if spynet_file else None )
 
     return BasicVSRModule(
         hr_mean=stats["hr"]["mean"],
         hr_std=stats["hr"]["std"],
-        data_range=stats["hr_data_range"],
-        data_min=stats["hr_percentiles"]["p1"],
-
-        mid_channels=arch.get("mid_channels", 64),
-        num_blocks=arch.get("num_blocks", 7),
-        max_residue_magnitude=arch.get("max_residue_magnitude", 10),
-        is_low_res_input=arch.get("is_low_res_input", True),
-        cpu_cache_length=arch.get("cpu_cache_length", 100),
-        spynet_path=str(spynet_path),
-        pretrained_path=str(backbone_path),
-
+        data_range=stats.get("hr_data_range"),
+        data_min=stats.get("hr_percentiles",{}).get("p1"),
+        mid_channels=config.get("mid_channels", 64),
+        num_blocks=config.get("num_blocks", 7),
+        learning_rate=args.lr,
+        pretrained_path=pretrained_path,
+        spynet_path=spynet_path,
+        use_aux=args.use_aux,
+        n_aux_channels=args.n_aux_channels,
+        use_spade=args.use_spade,        
+        seg_nc=args.seg_nc,              
         lambda_nw=args.lambda_nw,
         lambda_w=args.lambda_w,
         lambda_g=args.lambda_g,
-        learning_rate=args.lr,
     )
 
-
 def build_dataloaders(args):
-    loader_kw = dict(num_workers=args.num_workers, pin_memory=True)
+    loader_kw = {"num_workers": args.num_workers, "pin_memory": True}
 
-    train_ds = SRDataset(split="train", processed_dir=PATCHES_DIR, stats_path=STATS_PATH, augment=True)
-    val_ds = SRDataset(split="val", processed_dir=PATCHES_DIR, stats_path=STATS_PATH)
-    test_ds = SRDataset(split="test", processed_dir=PATCHES_DIR, stats_path=STATS_PATH)
+    train_ds = SRSequenceDataset("train", PATCHES_DIR, STATS_PATH)
+    val_ds = SRSequenceDataset("val", PATCHES_DIR, STATS_PATH)
+    test_ds = SRSequenceDataset("test", PATCHES_DIR, STATS_PATH)
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, **loader_kw)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, **loader_kw)
-    test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, **loader_kw)
+    train_loader = torch.utils.data.DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, **loader_kw)
+    val_loader = torch.utils.data.DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, **loader_kw)
+    test_loader = torch.utils.data.DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, **loader_kw)
 
     return train_loader, val_loader, test_loader
 
 
 def run(args):
     set_seed(args.seed)
-
-    run_name = args.run_name or f"exp_{int(time.time())}"
     stats = load_stats()
-    cfg = load_config("basicvsrplus")
-    precision = cfg.get("precision", "bf16-mixed")
+    config = load_config(args.config)
 
     train_loader, val_loader, test_loader = build_dataloaders(args)
+    model = build_model(stats, args, config)
 
-    # Pretrained weights (backbone + SpyNet) are loaded inside build_model,
-    # at construction time -- no separate post-hoc load_pretrained call needed.
-    model = build_model(stats, cfg, args)
+    run_name = args.run_name or f"basicvsrpp_baseline_ep{args.max_epochs}"
 
     logger = WandbLogger(
         project=args.project,
         name=run_name,
         group=args.group,
-        config={**cfg, **vars(args)},
+        save_dir="wandb_logs",
     )
 
-    ckpt = ModelCheckpoint(
+    ckpt_callback = ModelCheckpoint(
         dirpath=CKPT_DIR,
-        filename=run_name + "_epoch={epoch:02d}_val_water_mae={val/water_mae:.4f}",
+        filename=f"{run_name}_epoch={{epoch:02d}}_val_water_mae={{val/water_mae:.4f}}",
         monitor="val/water_mae",
         mode="min",
         save_top_k=1,
-        auto_insert_metric_name=False,
+        save_last=True,
     )
-
-    callbacks = [
-        ckpt,
-        EarlyStopping(monitor="val/water_mae", mode="min", patience=args.patience),
-        LearningRateMonitor(logging_interval="epoch"),
-    ]
 
     trainer = Trainer(
         max_epochs=args.max_epochs,
         accelerator="gpu",
         devices=1,
-        precision=precision,
+        precision="bf16-mixed",
         logger=logger,
-        callbacks=callbacks,
+        callbacks=[
+            ckpt_callback,
+            EarlyStopping(monitor="val/water_mae", patience=args.patience, mode="min"),
+            LearningRateMonitor(logging_interval="epoch"),
+        ],
         log_every_n_steps=10,
+        accumulate_grad_batches=args.accumulate_grad_batches,
+        num_sanity_val_steps=2,
     )
 
-    t0 = time.time()
+    print(f"Starting training: {run_name} | Group: {args.group}")
     trainer.fit(model, train_loader, val_loader)
-    trainer.test(model, test_loader, ckpt_path=ckpt.best_model_path)
 
-    print(f"[FINISH] Completed in {(time.time() - t0)/60:.2f}m | Best CKPT: {ckpt.best_model_path}")
+    if ckpt_callback.best_model_path:
+        print(f"Testing best checkpoint: {ckpt_callback.best_model_path}")
+        trainer.test(model, test_loader, ckpt_path=ckpt_callback.best_model_path)
+
     wandb.finish()
 
 
-def parse_args():
+if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--lr", type=float, default=1e-4)
+    
+    # Path to YAML config
+    p.add_argument("--config", type=str, default=str(DEFAULT_CONFIG_PATH))
+
+
     p.add_argument("--batch_size", type=int, default=2)
+    p.add_argument("--accumulate_grad_batches", type=int, default=4)
+    p.add_argument("--use_aux", action="store_true")             
+    p.add_argument("--n_aux_channels", type=int, default=25)   
+    p.add_argument("--use_spade", action="store_true")     
+    p.add_argument("--seg_nc", type=int, default=14)          
+
+    # Hyperparameters
+    p.add_argument("--lr", type=float, default=1e-4)
+    p.add_argument("--flow_lr", type=float, default=0.0)
     p.add_argument("--max_epochs", type=int, default=50)
     p.add_argument("--patience", type=int, default=10)
-    p.add_argument("--num_workers", type=int, default=4)
+    p.add_argument("--num_workers", type=int, default=6)
     p.add_argument("--seed", type=int, default=42)
+
+    # Loss weights
     p.add_argument("--lambda_nw", type=float, default=1.0)
     p.add_argument("--lambda_w", type=float, default=2.0)
     p.add_argument("--lambda_g", type=float, default=0.1)
 
+    # Logging
     p.add_argument("--project", default="Sequential_TIR")
-    p.add_argument("--run_name", default=None)
-    p.add_argument("--group", default=None)
-    return p.parse_args()
+    p.add_argument("--group", default="baseline")
+    p.add_argument("--run_name", default="None")
 
-
-if __name__ == "__main__":
-    run(parse_args())
+    args = p.parse_args()
+    run(args)

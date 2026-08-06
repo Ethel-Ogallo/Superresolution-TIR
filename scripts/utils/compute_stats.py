@@ -9,7 +9,7 @@ from pathlib import Path
 
 # Paths 
 # PATCHES_DIR = Path("/share/home/e2406751/Superresolution-TIR/data/processed/patches") #sisr
-PATCHES_DIR = Path("/share/home/e2406751/Superresolution-TIR/data/processed/seq_patches") #sequential
+PATCHES_DIR = Path("/share/home/e2406751/Superresolution-TIR/data/processed/seq_patches2") #sequential
 TRAIN_HR    = PATCHES_DIR / "train" / "HR"
 TRAIN_LR    = PATCHES_DIR / "train" / "LR"
 STATS_PATH  = PATCHES_DIR / "stats.json"

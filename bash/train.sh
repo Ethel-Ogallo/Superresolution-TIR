@@ -21,7 +21,7 @@ mkdir -p logs checkpoints/gan_final
 # run this first
 # wandb sweep configs/sweep.yaml
 # This command will output a unique SWEEP_ID, which you need for the next step.
-SWEEP_ID="sorh471y"  # Replace with your actual SWEEP_ID from the previous command
+SWEEP_ID="3hujmzgu"  # Replace with your actual SWEEP_ID from the previous command
 
 # -------- Step B: Run the Agent --------
 # NEW FIXES: Force Python to recognize your current directory folder
