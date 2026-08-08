@@ -104,7 +104,6 @@ def build_model(model_name, cfg, stats, args):
         data_range    = stats["hr_data_range"],
         data_min      = stats["hr_percentiles"]["p1"],
         learning_rate = args.lr,
-        # phase         = 2,
     )
 
     # Pretrained paths
@@ -223,6 +222,7 @@ def run(args):
 
     # Trainer
     val_check_interval = 5 if args.model == "resshift" else 1
+    accumulate_steps = 2 if args.model == "hat" else 1
 
     trainer = Trainer(
         max_epochs              = args.max_epochs,
@@ -234,6 +234,7 @@ def run(args):
         log_every_n_steps       = 10,
         # check_val_every_n_epoch = val_check_interval,  # add this
         # num_sanity_val_steps=0,
+        accumulate_grad_batches = accumulate_steps,
     )
 
     # Train 
