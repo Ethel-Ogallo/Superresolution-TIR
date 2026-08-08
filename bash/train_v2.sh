@@ -32,7 +32,7 @@ python -m scripts.training.seq_train \
     --lambda_g 0.1386 \
     --use_aux \
     --use_spade \
-    --run_name "spade1" \
+    --run_name "spade2" \
     --group "spade" \
     --project Sequential_TIR
 
