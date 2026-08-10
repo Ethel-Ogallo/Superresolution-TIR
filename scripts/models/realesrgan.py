@@ -52,8 +52,8 @@ class RealESRGANModule(pl.LightningModule):
         lambda_adversarial: float = 0.1,
         adaptation_strategy: str  = "projection",
         aux_chans: int            = None,
-        input_init: str           = "pretrained_mean",  # consistent with SwinIR naming
-        freeze_backbone: bool     = False,               # default True for stability
+        input_init: str           = "pretrained_mean",  
+        freeze_backbone: bool     = False,               
         phase: int                = 2,
         **kwargs,
     ):
@@ -77,10 +77,6 @@ class RealESRGANModule(pl.LightningModule):
         # self.accum_steps = 4
         
         # ---------------- generator --------------------------
-        # NOTE: always build with num_in_ch=3, matching the pretrained checkpoint's native shape Expanding
-        # conv_first happens AFTER pretrained weights are loaded, so the
-        # mean-based init for the new channels is derived from real pretrained
-        # features, not from a randomly-initialized layer.
         self.net_g = rrdbnet_arch.RRDBNet(
             num_in_ch=3,
             num_out_ch=3,
@@ -91,8 +87,7 @@ class RealESRGANModule(pl.LightningModule):
         )
 
         # load pretrained generator FIRST, while conv_first is still 3-channel
-        if pretrained_path:
-            self._load_pretrained_g(pretrained_path)
+        if pretrained_path: self._load_weights(self.net_g, pretrained_path, "generator")
 
         # ---------------- strategy heads --------------------------
         self.proj = None
@@ -101,9 +96,6 @@ class RealESRGANModule(pl.LightningModule):
             self.proj = AuxProjection(aux_chans=aux_chans, out_chans=3)
 
         elif adaptation_strategy == "direct":
-            # expand AFTER loading pretrained, so the new channels' init is derived
-            # from the actual pretrained conv_first weights (fixes the previous
-            # ordering bug where expansion happened before loading).
             self._expand_direct_input_layer()
 
         # output head: 3ch → 1ch
@@ -118,10 +110,11 @@ class RealESRGANModule(pl.LightningModule):
             skip_connection=True,
         )
 
-        if pretrained_d_path:
-            self._load_pretrained_d(pretrained_d_path)
-        else:
-            print("[INFO] Discriminator — no pretrained path, random init")
+        if pretrained_d_path: self._load_weights(self.net_d, pretrained_d_path, "discriminator")
+        # if pretrained_d_path:
+        #     self._load_pretrained_d(pretrained_d_path)
+        # else:
+        #     print("[INFO] Discriminator — no pretrained path, random init")
 
         # ----------- losses -----------------
         self.gan_loss = GANLoss(
@@ -413,32 +406,40 @@ class RealESRGANModule(pl.LightningModule):
         )
 
     # ---------------- pretrained loading ----------------
-    def _load_pretrained_g(self, path):
-        if not os.path.exists(path):
-            print(f"[WARNING] Generator pretrained not found: {path}")
-            return
-        print(f"[INFO] Loading RealESRGAN generator: {path}")
-        ckpt       = torch.load(path, map_location="cpu", weights_only=False)
-        state_dict = ckpt.get("params_ema", ckpt.get("params", ckpt))
-        model_dict = self.net_g.state_dict()
-        matched    = {
-            k: v for k, v in state_dict.items()
-            if k in model_dict and v.shape == model_dict[k].shape
-        }
-        self.net_g.load_state_dict(matched, strict=False)
-        print(f"[INFO] Generator: loaded {len(matched)}/{len(model_dict)} layers")
+    # def _load_pretrained_g(self, path):
+    #     if not os.path.exists(path):
+    #         print(f"[WARNING] Generator pretrained not found: {path}")
+    #         return
+    #     print(f"[INFO] Loading RealESRGAN generator: {path}")
+    #     ckpt       = torch.load(path, map_location="cpu", weights_only=False)
+    #     state_dict = ckpt.get("params_ema", ckpt.get("params", ckpt))
+    #     model_dict = self.net_g.state_dict()
+    #     matched    = {
+    #         k: v for k, v in state_dict.items()
+    #         if k in model_dict and v.shape == model_dict[k].shape
+    #     }
+    #     self.net_g.load_state_dict(matched, strict=False)
+    #     print(f"[INFO] Generator: loaded {len(matched)}/{len(model_dict)} layers")
 
-    def _load_pretrained_d(self, path):
-        if not os.path.exists(path):
-            print(f"[WARNING] Discriminator pretrained not found: {path}")
-            return
-        print(f"[INFO] Loading RealESRGAN discriminator: {path}")
-        ckpt       = torch.load(path, map_location="cpu", weights_only=False)
-        state_dict = ckpt.get("params", ckpt)
-        model_dict = self.net_d.state_dict()
-        matched    = {
-            k: v for k, v in state_dict.items()
-            if k in model_dict and v.shape == model_dict[k].shape
-        }
-        self.net_d.load_state_dict(matched, strict=False)
-        print(f"[INFO] Discriminator: loaded {len(matched)}/{len(model_dict)} layers")
+    # def _load_pretrained_d(self, path):
+    #     if not os.path.exists(path):
+    #         print(f"[WARNING] Discriminator pretrained not found: {path}")
+    #         return
+    #     print(f"[INFO] Loading RealESRGAN discriminator: {path}")
+    #     ckpt       = torch.load(path, map_location="cpu", weights_only=False)
+    #     state_dict = ckpt.get("params", ckpt)
+    #     model_dict = self.net_d.state_dict()
+    #     matched    = {
+    #         k: v for k, v in state_dict.items()
+    #         if k in model_dict and v.shape == model_dict[k].shape
+    #     }
+    #     self.net_d.load_state_dict(matched, strict=False)
+    #     print(f"[INFO] Discriminator: loaded {len(matched)}/{len(model_dict)} layers")
+
+    def _load_weights(self, model, path, name):
+        ckpt = torch.load(path, map_location="cpu")
+        sd = ckpt.get("params_ema", ckpt.get("params", ckpt))
+        msd = model.state_dict()
+        filtered = {k: v for k, v in sd.items() if k in msd and v.shape == msd[k].shape}
+        model.load_state_dict(filtered, strict=False)
+        print(f"[INFO] {name} loaded {len(filtered)} params")

@@ -2,8 +2,10 @@
 #SBATCH --job-name=aux_sisr
 #SBATCH -p longrun
 #SBATCH --gres=gpu:1
+#SBATCH -w sn1
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=32G
+
 # -------- Environment --------
 export WANDB_API_KEY="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"   # W&B API key for non-interactive login
 export WANDB_DIR=/tmp
@@ -26,7 +28,7 @@ python -m scripts.training.train_gan \
     --adaptation_strategy projection \
     --freeze_backbone 0\
     --project TIR_sisr_final \
-    --run_name projected3 \
+    --run_name projected4 \
     --group aux_ablation
 
 echo "direct aux input with pretrained mean"
@@ -41,7 +43,7 @@ python -m scripts.training.train_gan \
     --input_init pretrained_mean \
     --freeze_backbone 0\
     --project TIR_sisr_final \
-    --run_name direct3 \
+    --run_name direct4 \
     --group aux_ablation
 
 # # direct + pretrained mean — frozen  
