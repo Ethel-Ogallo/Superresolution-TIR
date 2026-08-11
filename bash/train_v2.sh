@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --job-name=seq_sr_aux
+#SBATCH --job-name=seqsr_spade
 #SBATCH -p longrun
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=6

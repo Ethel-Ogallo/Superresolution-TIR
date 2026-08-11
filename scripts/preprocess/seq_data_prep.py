@@ -15,7 +15,7 @@ HR_DIR = BASE / "HR_downsampled"
 LS_ALIGNED_DIR = BASE / "Landsat_aligned"
 WATER_MASK_DIR = BASE / "AUX" / "water_masks"
 SPLIT_JSON = BASE / "split_map.json"
-OUT_DIR = BASE / "processed/seq_patches"
+OUT_DIR = BASE / "processed/seq_patches2"
 
 HR_TILE = 256
 LR_TILE = 64
@@ -191,7 +191,7 @@ def main():
             used_origins = set()
             skips = {"boundary": 0, "nodata": 0, "cloud": 0, "shape": 0}
 
-            STRIDE = 1
+            STRIDE = 13
             for i in range(0, len(centerline), STRIDE):
                 r, c = centerline[i]
                 if not (rs <= r < re):
