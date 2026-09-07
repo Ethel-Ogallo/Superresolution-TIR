@@ -26,3 +26,12 @@ slurm-*.out
 
 stuff.txt
 stuff_copy.txt
+
+COSIA_1-0_GPKG_LAMB93_RHONE
+
+# track only pdf 
+docs/thesis/*
+!docs/thesis/main.pdf
+
+campaign_bounds.json
+TIR_data/
