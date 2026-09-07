@@ -1,5 +1,0 @@
-# configs/edsr_phase1.yaml
-model_class: EDSRModule
-n_feats: 64
-n_blocks: 16
-precision: "32"
