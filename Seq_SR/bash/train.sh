@@ -8,7 +8,7 @@
 #SBATCH --time=168:00:00 
 
 # -------- Environment --------
-export WANDB_API_KEY="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"   # W&B API key for non-interactive login
+export WANDB_API_KEY=""   
 export WANDB_DIR=/tmp
 
 source /share/common/anaconda/etc/profile.d/conda.sh
@@ -49,3 +49,4 @@ python -m scripts.training.seq_train \
 #     --run_name "exp4" \
 #     --group "baseline_overlap_5perc" \
 #     --project Sequential_TIR
+

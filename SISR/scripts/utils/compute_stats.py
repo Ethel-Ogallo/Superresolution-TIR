@@ -8,8 +8,7 @@ import numpy as np
 from pathlib import Path
 
 # Paths 
-# PATCHES_DIR = Path("/share/home/e2406751/Superresolution-TIR/data/processed/patches") #sisr
-PATCHES_DIR = Path("/share/home/e2406751/Superresolution-TIR/data/processed/seq_patches2") #sequential
+PATCHES_DIR = Path("/share/home/e2406751/Superresolution-TIR/data/processed/patches") #sisr
 TRAIN_HR    = PATCHES_DIR / "train" / "HR"
 TRAIN_LR    = PATCHES_DIR / "train" / "LR"
 STATS_PATH  = PATCHES_DIR / "stats.json"
@@ -17,8 +16,7 @@ STATS_PATH  = PATCHES_DIR / "stats.json"
 #  Compute stats from train tiles only 
 def compute_stats(tile_dir):
     """Compute mean and std from all .npy tiles in a directory."""
-    # files = sorted(tile_dir.glob("*.npy"))  # sisir
-    files = sorted(tile_dir.glob("**/*.npy")) #sequential
+    files = sorted(tile_dir.glob("*.npy"))  # sisir
     if not files:
         raise FileNotFoundError(f"No .npy files found in {tile_dir}")
 
@@ -55,8 +53,7 @@ def compute_stats(tile_dir):
 
 def compute_data_range(tile_dir, low_p=1.0, high_p=99.0):
     """Compute data range from percentile of valid pixels (train only)."""
-    # files = sorted(tile_dir.glob("*.npy")) #sisr
-    files = sorted(tile_dir.glob("**/*.npy")) #sequential
+    files = sorted(tile_dir.glob("*.npy")) #sisr
     if not files:
         raise FileNotFoundError(f"No .npy files found in {tile_dir}")
 
