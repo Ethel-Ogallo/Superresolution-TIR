@@ -1,0 +1,5 @@
+# configs/resshift.yaml
+model_class: ResShiftModule
+num_steps: 15
+scale: 4
+precision: "16-mixed" #"32"

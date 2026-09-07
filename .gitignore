@@ -7,7 +7,7 @@ scripts/__pycache__/
 scripts/visualization/__pycache__/
 wandb/
 TIR_sisr/
-wandb/
+wandb_*/
 *.pth
 *.ckpt
 data/raw/
@@ -25,3 +25,4 @@ __pycache__/
 slurm-*.out
 
 stuff.txt
+stuff_copy.txt

@@ -1,15 +1,11 @@
 #!/bin/bash -l
-# eval.sh — Phase 1 zero-shot inference for all models
-
 #SBATCH --job-name=sisr
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-gpu=6
 #SBATCH --mem=32G
-# #SBATCH --output=logs/eval_phase1_%j.log
-# #SBATCH --error=logs/eval_phase1_%j.err
 
 # -------- Environment --------
-export WANDB_API_KEY="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"   # W&B API key for non-interactive login
+export WANDB_API_KEY=""  
 export WANDB_DIR=/tmp
 
 source /share/common/anaconda/etc/profile.d/conda.sh
@@ -19,11 +15,6 @@ cd /share/castor/home/e2406751/Superresolution-TIR
 # mkdir -p logs results/phase1
 
 # Run all models
-# python -m scripts.evaluation.eval \
-#     --all \
-#     --phase 1
-
-# phase 1
 python -m scripts.evaluation.eval \
     --model realesrgan \
     --phase 1 \
