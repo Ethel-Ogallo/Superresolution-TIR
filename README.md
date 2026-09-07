@@ -31,20 +31,18 @@ Superresolution-TIR/
 ├── requirements.txt              # Python dependencies
 └── README.md
 ```
-### Guided SR
-![alt text](image.png)  
-
+### Guided SR  
+<img width="804" height="232" alt="image" src="https://github.com/user-attachments/assets/8802bf88-1195-457e-900e-25166737069c" />
+ 
 ### Sequential SR
-![alt text](image-3.png)
-
+<img width="820" height="626" alt="image" src="https://github.com/user-attachments/assets/81f45e17-3531-405e-960a-d0bf68fb2fec" />
 
 ### Results
 Example output of a river patch   
 
-![alt text](image-6.png)
+<img width="756" height="210" alt="image" src="https://github.com/user-attachments/assets/46d697a9-7b1d-45b0-b64c-092b1373a62a" />
 
 ### Acknowledgements
-
 This work was carried out as part of the Copernicus Master in Digital Earth Master's programme.
 
 
