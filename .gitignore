@@ -36,5 +36,7 @@ docs/thesis/
 campaign_bounds.json
 TIR_data/
 opt_notebooks/
-opt/scripts/
+opt_scripts/
 scripts/
+
+image*.png
