@@ -28,8 +28,6 @@ Superresolution-TIR/
 │   ├── notebooks/
 │   └── scripts/
 │
-├── data/                         # Dataset and auxiliary data
-├── results/                      # Experimental results and figures
 ├── requirements.txt              # Python dependencies
 └── README.md
 ```
