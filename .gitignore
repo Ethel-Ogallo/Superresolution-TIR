@@ -30,8 +30,11 @@ stuff_copy.txt
 COSIA_1-0_GPKG_LAMB93_RHONE
 
 # track only pdf 
-docs/thesis/*
-!docs/thesis/main.pdf
+docs/thesis/
+# !docs/thesis/main.pdf
 
 campaign_bounds.json
 TIR_data/
+opt_notebooks/
+opt/scripts/
+scripts/
