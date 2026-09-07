@@ -40,7 +40,7 @@ Superresolution-TIR/
 ### Results
 Example output of a river patch   
 
-<img width="756" height="210" alt="image" src="https://github.com/user-attachments/assets/46d697a9-7b1d-45b0-b64c-092b1373a62a" />
+<img width="757" height="199" alt="image" src="https://github.com/user-attachments/assets/d407a986-d93e-46a4-832e-e3d1f4242036" />
 
 ### Acknowledgements
 This work was carried out as part of the Copernicus Master in Digital Earth Master's programme.
