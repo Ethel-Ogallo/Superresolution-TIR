@@ -1,5 +1,5 @@
 # ----------------------------
-# CLEAN AUX PATCHING SCRIPT (FINAL)
+# CLEAN AUX PATCHING SCRIPT 
 # ----------------------------
 
 import json

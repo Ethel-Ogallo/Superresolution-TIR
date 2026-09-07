@@ -1,4 +1,5 @@
 # scripts/training/train.py
+
 import argparse
 import json
 import random
@@ -22,17 +23,18 @@ from torch.utils.data import DataLoader
 from scripts.utils.dataset import SRDataset
 from scripts.utils.data_aug import train_transforms
 
-# Paths
-BASE        = Path("/share/home/e2406751/Superresolution-TIR")
+# ============================================================
+# PATHS
+# ============================================================
+BASE = Path("/share/home/e2406751/Superresolution-TIR")
 PATCHES_DIR = BASE / "data/processed/patches"
-STATS_PATH  = PATCHES_DIR / "stats.json"
-PRETRAINED  = BASE / "data/pretrained"
 CONFIGS_DIR = BASE / "configs"
-CKPT_DIR    = BASE / "checkpoints/dev_gan"
+STATS_PATH = PATCHES_DIR / "stats.json"
+PRETRAINED = BASE / "data/pretrained"
+CKPT_DIR = BASE / "checkpoints/gan_final"
 CKPT_DIR.mkdir(parents=True, exist_ok=True)
 
 
-# Reproducibility
 def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
@@ -40,46 +42,40 @@ def set_seed(seed=42):
     torch.cuda.manual_seed_all(seed)
 
 
-# Config
-def load_config(model_name):
-    path = CONFIGS_DIR / f"{model_name}.yaml"
-    with open(path) as f:
+def load_config(name):
+    with open(CONFIGS_DIR / f"{name}.yaml") as f:
         return yaml.safe_load(f)
 
 
-# Model loader
-def get_model_class(model_name):
-    if model_name == "realesrgan":
-        from scripts.models.realesrgan import RealESRGANModule
-        return RealESRGANModule
-    raise ValueError(f"Unknown model: {model_name}")
-
-
-# Build model
 def build_model(cfg, stats, args, aux_chans):
     from scripts.models.realesrgan import RealESRGANModule
 
     skip = {"model_class", "precision"}
     arch = {k: v for k, v in cfg.items() if k not in skip}
 
+    arch.pop("lambda_perceptual", None)
+    arch.pop("lambda_adversarial", None)
+    arch.pop("d_lr_scale", None)
+
     return RealESRGANModule(
         **arch,
         pretrained_path=str(PRETRAINED / "RealESRGAN_generator_x4.pth"),
         pretrained_d_path=str(PRETRAINED / "RealESRGAN_discriminator_x4.pth"),
         learning_rate=args.lr,
+        d_lr_scale=args.d_lr_scale,
         aux_chans=aux_chans,
-
-        adaptation_strategy=args.adaptation_strategy,
-        input_init=args.input_init,
-        freeze_backbone=bool(args.freeze_backbone),
-
+        use_spade=args.use_spade,  
+        lambda_nw=args.lambda_nw,
+        lambda_w=args.lambda_w,
+        lambda_g=args.lambda_g,
+        lambda_perceptual=args.lambda_perceptual,    
+        lambda_adversarial=args.lambda_adversarial,  
         hr_mean=stats["hr"]["mean"],
         hr_std=stats["hr"]["std"],
         data_range=stats["hr_data_range"],
         data_min=stats["hr_percentiles"]["p1"],
-)
+    )
 
-# ------------ Training pipeline ----------------
 def run(args):
     set_seed(args.seed)
     
@@ -123,7 +119,7 @@ def run(args):
                              shuffle=False, **loader_kw)
     
     # Get auxiliary channel count from the dataset
-    raw_aux_chans = train_ds[0]["aux"].shape[0]
+    raw_aux_chans = train_ds[0]["aux_lr"].shape[0]
     
     # Build Model
     model = build_model(cfg, stats, args, raw_aux_chans)
@@ -154,6 +150,7 @@ def run(args):
                       callbacks=callbacks, 
                       log_every_n_steps=10) 
 
+    print(f"[RUN] {run_name} | SPADE: {model.use_spade}")
     
     t0 = time.time()
     trainer.fit(model, train_loader, val_loader)
@@ -165,28 +162,25 @@ def run(args):
     wandb.finish()
 
 
-# -------------------------
-# CLI
-# -------------------------
 def parse_args():
     p = argparse.ArgumentParser()
-
-    p.add_argument("--model", required=True, choices=["realesrgan"])
+    p.add_argument("--use_spade", type=lambda x: (str(x).lower() == 'true'), default=False)
     p.add_argument("--lr", type=float, default=1e-4)
+    p.add_argument("--d_lr_scale", type=float, default=1.0)
     p.add_argument("--batch_size", type=int, default=4)
-    p.add_argument("--max_epochs", type=int, default=100)
-    p.add_argument("--patience", type=int, default=20)
+    p.add_argument("--max_epochs", type=int, default=50)
+    p.add_argument("--patience", type=int, default=10)
     p.add_argument("--num_workers", type=int, default=4)
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--project", default="TIR_sisr_final*")
+    p.add_argument("--lambda_nw", type=float, default=1.0)
+    p.add_argument("--lambda_w", type=float, default=2.0)
+    p.add_argument("--lambda_g", type=float, default=0.1)
+    p.add_argument("--lambda_adversarial", type=float, default=0.1) 
+    p.add_argument("--lambda_perceptual", type=float, default=1.0)
+
+    p.add_argument("--project", default="TIR_SISR")
     p.add_argument("--run_name", default=None)
     p.add_argument("--group", default=None)
-    p.add_argument("--use_aux", type=int, default=1)
-    p.add_argument("--adaptation_strategy", type=str, default="projection", choices=["projection", "direct", "fusion"])  
-    p.add_argument("--freeze_backbone", type=int, default=0)
-    p.add_argument("--freeze_mode",type=str,default="none",choices=["none", "body", "body+first"])
-    p.add_argument("--input_init",type=str,default="pretrained_mean",
-                   choices=["pretrained_mean","gaussian","xavier","he", "partial_preserve"])
 
     return p.parse_args()
 

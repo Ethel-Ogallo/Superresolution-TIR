@@ -20,7 +20,9 @@ tile_size = 256
 overlap = 0.5
 step = int(tile_size * (1 - overlap))  # 128 pixels
 # Block must be wider than one tile to prevent leakage across boundaries
-block_size_pixels = tile_size * 4  # 1024 pixels = ~7680m, safely > one tile
+# block_size_pixels = tile_size * 4  # 1024 pixels = ~7680m, safely > one tile
+block_size_pixels = tile_size * 8  # larger block size for sequential sr
+
 
 # Train/val rasters only
 trainval_rasters = [
@@ -32,7 +34,7 @@ trainval_rasters = [
 # set aside because of observable geographic AOI in full dataset campaigns together
 # test set rasters only
 # test_rasters = [
-#     "BRC_2022.tif", "BRC_2023.tif", "BRC_2024.tif",
+#     "BRC_2022.tif", "BRC_2023.tif", 
 #     "HAUT_2025.tif"
 # ]
 
@@ -49,18 +51,25 @@ for fname in trainval_rasters:
     n_blocks = len(block_starts)
 
     for i, start in enumerate(block_starts):
-        end = min(start + block_size_pixels, n_rows)
+        raw_end = start + block_size_pixels
         
+        # Check if this is the very last block in the campaign loop
+        if i == n_blocks - 1:
+            # Round up to the absolute nearest multiple of tile_size (256) past n_rows
+            end = int(np.ceil(n_rows / tile_size) * tile_size)
+        else:
+            # Middle blocks stay perfectly scaled to block_size_pixels
+            end = raw_end
+            
         if n_blocks <= 3:
-            # For short rasters, always make the middle block val
             split = "val" if i == 1 else "train"
         else:
-            # Systematic assignment for longer rasters
             split = "val" if (i % 5 == 2) else "train"
+            
         blocks.append({
             "block_id": i,
             "row_start": start,
-            "row_end": end,
+            "row_end": end,                  
             "n_rows": end - start,
             "split": split
         })
@@ -84,7 +93,7 @@ for fname in trainval_rasters:
           f"≈ {round(100*n_train/total_blocks)}% / {round(100*n_val/total_blocks)}%")
 
 # Save blocking map
-output_path = Path("/share/home/e2406751/Superresolution-TIR/data/split_map.json")
+output_path = Path("/share/home/e2406751/Superresolution-TIR/data/seq_split_map.json")
 with open(output_path, "w") as f:
     json.dump(split_map, f, indent=2)
 

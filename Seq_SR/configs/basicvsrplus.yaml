@@ -1,0 +1,17 @@
+# configs/basicvsrplus.yaml
+# Baseline BasicVSR++: raw TIR only, no aux channels, no SPADE, architecture
+# untouched from basicsr. Values below match the released pretrained
+# checkpoint (basicvsr_plusplus_c64n7_8x1_600k_reds4_...): c64 -> mid_channels,
+# n7 -> num_blocks. Don't change these without re-checking the checkpoint name.
+model_class: BasicVSRPlusPlusModule
+precision: "bf16-mixed"
+mid_channels: 64
+num_blocks: 7                 # must match pretrained checkpoint's "n7"
+max_residue_magnitude: 10
+is_low_res_input: true
+cpu_cache_length: 100         # sequences send features to CPU above this length; T=5 won't trigger it
+seq_len: 5                      # must match the training seq_len; T=5 is the default for BasicVSR++
+
+pretrained:
+  backbone_filename: "basicvsr_plusplus_c64n7_8x1_600k_reds4_20210217-db622b2f.pth"
+  spynet_filename: "spynet_20210409-c6c1bd09.pth"

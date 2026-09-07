@@ -11,7 +11,7 @@ import numpy as np
 import rasterio
 from pathlib import Path
 
-PATCHES_DIR    = Path("/share/home/e2406751/Superresolution-TIR/data/processed/patches")
+PATCHES_DIR    = Path("/share/home/e2406751/Superresolution-TIR/data/processed/patches2")
 WATER_MASK_DIR = Path("/share/home/e2406751/Superresolution-TIR/data/AUX/water_masks")
 METADATA_PATH  = PATCHES_DIR / "metadata.json"
 TILE_SIZE      = 256
