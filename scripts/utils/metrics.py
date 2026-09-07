@@ -1,5 +1,5 @@
 """
-scripts/utils/metrics.py 
+scripts/utils/metrics.py — Metrics for spatial decoupling of TIR data with LPIPS
 """
 
 import torch
