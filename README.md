@@ -39,7 +39,8 @@ Superresolution-TIR/
 
 
 ### Results
-Sample output 
+Example output of a river patch   
+
 ![alt text](image-6.png)
 
 ### Acknowledgements
