@@ -3,8 +3,6 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-gpu=6
 #SBATCH --mem=32G
-# #SBATCH --output=logs/eval_dev_%j.log
-# #SBATCH --error=logs/eval_phase1_%j.err
 
 # -------- Environment --------
 export WANDB_API_KEY="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"   # W&B API key for non-interactive login

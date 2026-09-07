@@ -1,3 +1,7 @@
+"""
+Dataset class for Super-Resolution of TIR images including auxiliary data.
+"""
+
 import json
 import numpy as np
 import torch
