@@ -13,7 +13,7 @@ from torchmetrics.image import LearnedPerceptualImagePatchSimilarity
 
 from scripts.models.spade import RRDBNetWithSPADE
 from scripts.utils.metrics import compute_metrics
-from scripts.utils.loss import combined_loss
+from scripts.utils.custom_loss import combined_loss
 
 class RealESRGANModule(pl.LightningModule):
     def __init__(

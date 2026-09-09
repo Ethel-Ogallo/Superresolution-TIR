@@ -14,13 +14,12 @@ aux_hr      [20, 256, 256] Aux data at 256px          — SPADE HR conditioning
 water_mask  [1,  256, 256] 1 where pixel is water/river 
 
 Time fields (scalars, used in model input AND loss):
-lr_time          float   LR acquisition hour (decimal, e.g. 10.37 = 10h22m)
 time_gap_hours   float   |hr_time  - lr_time|  in hours
 date_gap_days    float   |hr_date  - lr_date|  in calendar days
 
 Time fields are loaded as tensors but used in two ways:
     1. Model input  : tiled spatially and concatenated as channels 22-24
-                      (lr_time/24, time_gap_hours/24, date_gap_days/365)
+                      (time_gap_hours/24, date_gap_days/365)
     2. Loss weight  : passed as scalars to combined_loss to modulate
                       the global loss weight.
 
@@ -160,7 +159,6 @@ class SRDataset(Dataset):
             key  = Path(fname).stem
             meta = self.metadata.get(key, {})
 
-            # sample["lr_time"] = torch.tensor(float(meta.get("lr_time", 10.0)), dtype=torch.float32,)
             sample["time_gap_hours"] = torch.tensor(float(meta.get("time_gap_hours", 0.0)), dtype=torch.float32,)
             sample["date_gap_days"] = torch.tensor(float(meta.get("date_gap_days", 0.0)), dtype=torch.float32,)
 

@@ -10,7 +10,7 @@ HR_DIR         = BASE / "HR_downsampled"
 LS_ALIGNED_DIR = BASE / "Landsat_aligned"
 SPLIT_JSON     = BASE / "split_map.json"
 PAIRS_JSON     = BASE / "hr_lr_pairs.json"
-OUT_DIR        = BASE / "processed/patches2"
+OUT_DIR        = BASE / "processed/patches"
 
 # Config 
 HR_TILE       = 256
@@ -89,7 +89,7 @@ for hr_path in sorted(HR_DIR.glob("*.tif")):
         continue
 
     # Verify preprocessed aligned files exist before processing
-    lst_path = LS_ALIGNED_DIR / "LST_Celsius" / f"{campaign}_lst.tif"
+    lst_path = LS_ALIGNED_DIR / "LST_Celsius" / f"{campaign}.tif"
     qa_path  = LS_ALIGNED_DIR / "QA_Pixel" / f"{campaign}_qa.tif"
     if not lst_path.exists() or not qa_path.exists():
         print(f"⚠  Preprocessed Landsat layers missing for {campaign}, skipping")
