@@ -118,20 +118,31 @@ class BlurAugment:
         return lr, hr, hr_mask, aux_lr, aux_mid, aux_hr, water_mask
 
 
+# class Compose:
+#     def __init__(self, transforms):
+#         self.transforms = transforms
+
+#     def __call__(self, lr, hr, hr_mask, aux_lr=None, aux_mid=None, aux_hr=None, water_mask=None):
+
+#         for t in self.transforms:
+#             lr, hr, hr_mask, aux_lr, aux_mid, aux_hr, water_mask = t(
+#                 lr, hr, hr_mask, aux_lr, aux_mid, aux_hr, water_mask
+#             )
+
+#         return lr, hr, hr_mask, aux_lr, aux_mid, aux_hr, water_mask
+
 class Compose:
     def __init__(self, transforms):
         self.transforms = transforms
 
-    def __call__(self, lr, hr, hr_mask, aux_lr=None, aux_mid=None, aux_hr=None, water_mask=None):
-
+    def __call__(self, lr, hr, hr_mask):
         for t in self.transforms:
-            lr, hr, hr_mask, aux_lr, aux_mid, aux_hr, water_mask = t(
-                lr, hr, hr_mask, aux_lr, aux_mid, aux_hr, water_mask
+            lr, hr, hr_mask, _, _, _, _ = t(
+                lr, hr, hr_mask
             )
 
-        return lr, hr, hr_mask, aux_lr, aux_mid, aux_hr, water_mask
-
-
+        return lr, hr, hr_mask
+    
 def train_transforms():
     return Compose([
         RandomHorizontalFlip(p=0.5),

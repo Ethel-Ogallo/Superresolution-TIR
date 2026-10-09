@@ -1,0 +1,12 @@
+# configs/fastdiffsr.yaml
+model_class: FastDiffSRModule
+precision: 32-true
+
+# Training settings
+batch_size: 1
+max_epochs: 100
+patience: 20
+
+# Optimizer settings
+learning_rate: 1.0e-5
+weight_decay: 1.0e-6

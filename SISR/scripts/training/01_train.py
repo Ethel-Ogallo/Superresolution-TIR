@@ -1,21 +1,12 @@
-# scripts/training/train.py
 """
-train.py — Phase 2 fine-tuning for TIR Super-Resolution benchmark.
-
-Usage:
-    python -m scripts.training.train --model edsr --phase 2
-    python -m scripts.training.train --model swinir --phase 2
-    python -m scripts.training.train --model hat --phase 2
-    python -m scripts.training.train --model realesrgan --phase 2
-
-SLURM:
-    sbatch scripts/training/train_phase2.sh
+train.py — fine-tuning for TIR Super-Resolution benchmark.
 """
 
 import argparse
 import json
 import os
 import random
+import sys
 
 import numpy as np
 import torch
@@ -32,17 +23,25 @@ from lightning.pytorch.callbacks import (
 from lightning.pytorch.loggers import WandbLogger
 from torch.utils.data import DataLoader
 
+
+# Project directories
+PROJECT_ROOT = Path(__file__).resolve().parents[3]  # Superresolution-TIR
+SISR_ROOT = PROJECT_ROOT / "SISR"
+SCRIPTS_ROOT = SISR_ROOT / "scripts"
+
+# Allow imports from the SISR directory.
+sys.path.insert(0, str(SISR_ROOT))
+
 from scripts.utils.dataset import SRDataset
 from scripts.utils.data_aug import train_transforms
 
-# Paths 
-BASE        = Path("/share/home/e2406751/Superresolution-TIR")
-PATCHES_DIR = BASE / "data/processed/patches"
-STATS_PATH  = PATCHES_DIR / "stats.json"
-PRETRAINED  = BASE / "data/pretrained"
-CONFIGS_DIR = BASE / "configs"
-CKPT_DIR    = BASE / "checkpoints/phase2.1"
-CKPT_DIR.mkdir(parents=True, exist_ok=True)
+
+PATCHES_DIR = PROJECT_ROOT / "data" / "processed" / "patches"
+STATS_PATH = PATCHES_DIR / "stats.json"
+CHECKPOINT_PATH = PROJECT_ROOT / "data" / "pretrained" / "fastdiffx4.pth"
+PRETRAINED = PROJECT_ROOT / "data" / "pretrained"
+CONFIGS_DIR = SISR_ROOT / "configs"
+CKPT_DIR = SISR_ROOT / "checkpoints" / "phase2.1"
 
 
 # Reproducibility 
@@ -67,7 +66,7 @@ PRETRAINED_PATHS = {
     "swinir":     "SwinIR_classical_x4.pth",
     "hat":        "HAT_imagenet_x4.pth",
     "realesrgan": "RealESRGAN_generator_x4.pth",
-    "resshift":   "ResShift_x4.pth",    
+    "fastdiffsr":   "fastdiffx4.pth",    
 }
 
 PRETRAINED_D_PATHS = {
@@ -79,55 +78,68 @@ def get_model_class(model_name):
     if model_name == "edsr":
         from scripts.models.edsr import EDSRModule
         return EDSRModule
+
     if model_name == "swinir":
         from scripts.models.swinir import SwinIRModule
         return SwinIRModule
+
     if model_name == "hat":
         from scripts.models.hat import HATModule
         return HATModule
+
     if model_name == "realesrgan":
         from scripts.models.realesrgan import RealESRGANModule
         return RealESRGANModule
-    if model_name == "resshift":
-        from scripts.models.resshift import ResShiftModule
-        return ResShiftModule
+
+    if model_name == "fastdiffsr":
+        from scripts.models.fastdiffsr import FastDiffSRModule
+        return FastDiffSRModule
+
     raise ValueError(f"Unknown model: {model_name}")
 
 
 def build_model(model_name, cfg, stats, args):
     cls = get_model_class(model_name)
 
-    # Common kwargs for all models
-    common = dict(
-        hr_mean       = stats["hr"]["mean"],
-        hr_std        = stats["hr"]["std"],
-        data_range    = stats["hr_data_range"],
-        data_min      = stats["hr_percentiles"]["p1"],
-        learning_rate = args.lr,
+    pretrained_path = str(
+        PRETRAINED / PRETRAINED_PATHS[model_name]
     )
 
-    # Pretrained paths
-    pretrained_path = str(PRETRAINED / PRETRAINED_PATHS[model_name]) \
-                      if model_name in PRETRAINED_PATHS else None
+    if model_name == "fastdiffsr":
+        model = cls(
+            stats_path=str(STATS_PATH),
+            learning_rate=args.lr,
+            checkpoint_path=str(CHECKPOINT_PATH),
+        )
+        print(f"[INFO] FastDiffSR checkpoint: {CHECKPOINT_PATH}")
+        return model
 
-    # Architecture hparams from config
-    # Strip non-architecture keys
-    skip_keys = {"model_class", "precision"}
-    arch_kwargs = {k: v for k, v in cfg.items() if k not in skip_keys}
+    # Common arguments for the existing models.
+    common = dict(
+        hr_mean=stats["hr"]["mean"],
+        hr_std=stats["hr"]["std"],
+        data_range=stats["hr_data_range"],
+        data_min=stats["hr_percentiles"]["p1"],
+        learning_rate=args.lr,
+    )
 
-    model_kwargs = {**common, **arch_kwargs,
-                    "pretrained_path": pretrained_path}
+    arch_kwargs = {
+        k: v for k, v in cfg.items()
+        if k not in {"model_class", "precision"}
+    }
 
-    # RealESRGAN also needs discriminator path
+    model_kwargs = {
+        **common,
+        **arch_kwargs,
+        "pretrained_path": pretrained_path,
+    }
+
     if model_name == "realesrgan":
         model_kwargs["pretrained_d_path"] = str(
             PRETRAINED / PRETRAINED_D_PATHS["realesrgan"]
         )
-    if model_name == "resshift":
-        model_kwargs["ae_path"] = str(PRETRAINED / "autoencoder_vq_f4.pth")
-    
-    print(f"[DEBUG] pretrained_path: {model_kwargs.get('pretrained_path')}")
-    print(f"[DEBUG] ae_path: {model_kwargs.get('ae_path')}")
+
+    print(f"[DEBUG] pretrained_path: {pretrained_path}")
 
     return cls(**model_kwargs)
 
@@ -137,7 +149,7 @@ def run(args):
     set_seed(args.seed)
 
     print(f"\n{'═'*60}")
-    print(f"Model : {args.model.upper()} — Phase 2 Fine-tuning")
+    print(f"Model : {args.model.upper()} — Fine-tuning")
     print(f"{'═'*60}")
 
     # Load stats and config 
@@ -154,7 +166,7 @@ def run(args):
         stats_path=STATS_PATH,
         repeat_channels=True,
         transform=train_transforms(),          
-        use_water_mask=True,    # needed for masked_water loss in Phase 2 model dev
+        use_water_mask=True,    
     )
     val_ds = SRDataset(
         split="val",
@@ -162,7 +174,7 @@ def run(args):
         stats_path=STATS_PATH,
         repeat_channels=True,
         transform=None,
-        use_water_mask=True,    # needed for masked_water loss in Phase 2 model dev
+        use_water_mask=True,   
     )
 
     test_ds = SRDataset(
@@ -171,7 +183,7 @@ def run(args):
         stats_path=STATS_PATH,
         repeat_channels=True,
         transform=None,
-        use_water_mask=True,    # needed for masked_water loss in Phase 2 model dev
+        use_water_mask=True,    
     )
 
     loader_kw    = dict(num_workers=args.num_workers, pin_memory=True)
@@ -221,8 +233,8 @@ def run(args):
     ]
 
     # Trainer
-    val_check_interval = 5 if args.model == "resshift" else 1
-    accumulate_steps = 2 if args.model == "hat" else 1
+    val_check_interval = 1
+    accumulate_steps = 4 if args.model == "fastdiffsr" else (2 if args.model == "hat" else 1)
 
     trainer = Trainer(
         max_epochs              = args.max_epochs,
@@ -232,8 +244,6 @@ def run(args):
         logger                  = wandb_logger,
         callbacks               = callbacks,
         log_every_n_steps       = 10,
-        # check_val_every_n_epoch = val_check_interval,  # add this
-        # num_sanity_val_steps=0,
         accumulate_grad_batches = accumulate_steps,
     )
 
@@ -253,17 +263,16 @@ def run(args):
 
 #  CLI 
 def parse_args():
-    p = argparse.ArgumentParser(description="Phase 2 fine-tuning")
-
-    p.add_argument("--model",       required=True,
-                   choices=["edsr", "swinir", "hat", "realesrgan", "resshift"])
+    p = argparse.ArgumentParser(description="fine-tuning")
+    p.add_argument("--model",required=True,
+                   choices=["edsr", "swinir", "hat", "realesrgan", "fastdiffsr"],)
     p.add_argument("--lr",          type=float, default=1e-4)
     p.add_argument("--batch_size",  type=int,   default=4)
     p.add_argument("--max_epochs",  type=int,   default=100)
     p.add_argument("--patience",    type=int,   default=20)
     p.add_argument("--num_workers", type=int,   default=4)
     p.add_argument("--seed",        type=int,   default=42)
-    p.add_argument("--project",     default="TIR_sisr_final*")
+    p.add_argument("--project",     default="TIR_sisr_final")
     p.add_argument("--run_name",    default=None)
     p.add_argument("--group",       default=None)
 
