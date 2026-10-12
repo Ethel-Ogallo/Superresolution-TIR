@@ -14,7 +14,7 @@ from basicsr.archs import rrdbnet_arch, discriminator_arch
 from basicsr.losses.gan_loss import GANLoss
 from basicsr.losses.basic_loss import PerceptualLoss
 
-from scripts.utils.loss import masked_l1
+from scripts.utils.masked_loss import masked_l1
 from scripts.utils.metrics import compute_metrics
 
 

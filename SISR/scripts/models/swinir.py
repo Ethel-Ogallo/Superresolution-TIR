@@ -13,7 +13,7 @@ import lightning.pytorch as pl
 from basicsr.archs import swinir_arch
 import torch.nn.functional as F
 from scripts.utils.metrics import compute_metrics
-from scripts.utils.loss import masked_l1
+from scripts.utils.masked_loss import masked_l1
 
 
 class SwinIRModule(pl.LightningModule):

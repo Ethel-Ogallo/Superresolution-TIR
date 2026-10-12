@@ -13,7 +13,7 @@ import lightning.pytorch as pl
 import torch.nn.functional as F
 from basicsr.archs import edsr_arch
 from scripts.utils.metrics import compute_metrics
-from scripts.utils.loss import masked_l1
+from scripts.utils.masked_loss import masked_l1
 
 
 class EDSRModule(pl.LightningModule):

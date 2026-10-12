@@ -1,12 +1,6 @@
 """
 FastDiffSR x4 model definition
 Original implementation: https://github.com/Meng-333/FastDiffSR | paper:10.1109/TGRS.2024.3458009
-
-Expected inference input:
-    LR_up: (B, 3, 256, 256)
-            Three-channel LR image already upsampled x4.
-Output:
-    SR:    (B, 3, 256, 256)
 """
 
 from pathlib import Path
