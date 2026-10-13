@@ -24,7 +24,8 @@ FASTDIFFSR_ROOT = SISR_ROOT / "scripts" / "external" / "FastDiffSR"
 CONFIG_PATH = FASTDIFFSR_ROOT / "config" / "sr_fastdiffsr_test_64_256.json"
 CHECKPOINT_PATH = PROJECT_ROOT / "data" / "pretrained" / "fastdiffx4.pth"
 
-from FastDiffSR import fastdiffsr_modules 
+sys.path.insert(0, str(FASTDIFFSR_ROOT.parent))
+from FastDiffSR import networks
 
 # ---------------- load pretrained weights ----------------
 def load_pretrained_weights(netG, checkpoint_path):
@@ -95,10 +96,21 @@ class FastDiffSRModule(pl.LightningModule):
         with open(config_path, "r") as f:
             config = json.load(f)
 
-        self.netG = fastdiffsr_modules.networks.define_G(config)
+        if "distributed" not in config:
+            config["distributed"] = False
+
+        self.netG = networks.define_G(config)
+
+        # Explicitly set up the noise schedule.
+        self.netG.set_new_noise_schedule(
+            config["model"]["beta_schedule"]["train"],
+            device=torch.device("cpu"),
+        )
+        self.netG.set_loss(torch.device("cpu"))
+
         load_pretrained_weights(self.netG, checkpoint_path)
  
-    # Temperature scaling helpers
+    # Temperature value scaling 
     @staticmethod
     def _single_channel(tensor): # keep one copy of TIR
         return tensor[:, 0:1]
@@ -126,7 +138,7 @@ class FastDiffSRModule(pl.LightningModule):
         lr = self._to_model_scale(lr_c)
         hr = self._to_model_scale(hr_c)
  
-        # FastDiffSR conditions on a full-size (blurry) LR image.
+        # upscale LR to match HR target size
         lr_up = F.interpolate(lr, size=hr.shape[-2:], mode="bicubic", align_corners=False)
  
         # The pretrained UNet expects 3-channel images

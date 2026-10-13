@@ -79,5 +79,5 @@ python SISR/scripts/training/01_train.py \
     --patience 100 \
     --num_workers 0 \
     --project TIR_sisr_final \
-    --run_name fastdiffsr_v2 \
+    --run_name fastdiffsr_v3 \
     --group benchmark_final
