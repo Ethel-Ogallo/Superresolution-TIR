@@ -23,61 +23,10 @@ sys.path.insert(0, str(SISR_ROOT)) # Allow `import scripts.utils.metrics`
 FASTDIFFSR_ROOT = SISR_ROOT / "scripts" / "external" / "FastDiffSR"
 CONFIG_PATH = FASTDIFFSR_ROOT / "config" / "sr_fastdiffsr_test_64_256.json"
 CHECKPOINT_PATH = PROJECT_ROOT / "data" / "pretrained" / "fastdiffx4.pth"
- 
 
-# ---------------- helper functions ----------------
-def build_diffusion_model(config_path):
-    """Create the FastDiffSR network (UNet + diffusion wrapper) from the config."""
+from FastDiffSR import fastdiffsr_modules 
 
-    sys.path.insert(0, str(FASTDIFFSR_ROOT.parent))
-    from FastDiffSR.fastdiffsr_modules import diffusion, unet
- 
-    with open(config_path, "r") as f:
-        config = json.load(f)
- 
-    unet_opt = config["model"]["unet"]
-    diff_opt = config["model"]["diffusion"]
- 
-    # check model matches the pretrained checkpoint
-    assert diff_opt["image_size"] == 256
-    assert diff_opt["channels"] == 3
-    assert unet_opt["in_channel"] == 6
-    assert unet_opt["out_channel"] == 3
- 
-    # The UNet 
-    denoiser = unet.UNet(
-        in_channel=unet_opt["in_channel"],
-        out_channel=unet_opt["out_channel"],
-        norm_groups=unet_opt.get("norm_groups", 32),
-        inner_channel=unet_opt["inner_channel"],
-        channel_mults=unet_opt["channel_multiplier"],
-        attn_res=unet_opt["attn_res"],
-        res_blocks=unet_opt["res_blocks"],
-        dropout=unet_opt["dropout"],
-        image_size=diff_opt["image_size"],
-    )
- 
-    # GaussianDiffusion wraps the UNet
-    netG = diffusion.GaussianDiffusion(
-        denoiser,
-        image_size=diff_opt["image_size"],
-        channels=diff_opt["channels"],
-        loss_type="l1",
-        conditional=diff_opt["conditional"],
-        schedule_opt=None,
-        scale=4,
-    )
- 
-    # set up noise schedule before loading weights
-    netG.set_new_noise_schedule(
-        config["model"]["beta_schedule"]["train"],
-        device=torch.device("cpu"),
-    )
-    netG.set_loss(torch.device("cpu"))
- 
-    return netG
- 
- 
+# ---------------- load pretrained weights ----------------
 def load_pretrained_weights(netG, checkpoint_path):
     """Load the pretrained checkpoint and fail loudly if anything does not match."""
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
@@ -138,12 +87,15 @@ class FastDiffSRModule(pl.LightningModule):
         self.temp_min = float(min(stats["hr"]["min"], stats["lr"]["min"]))
         self.temp_max = float(max(stats["hr"]["max"], stats["lr"]["max"]))
  
-        # Used ONLY by compute_metrics
+        # Used only by compute_metrics
         self.DATA_MIN = float(stats["hr_percentiles"]["p1"])
         self.DATA_RANGE = float(stats["hr_data_range"])
  
         # --- Network ---
-        self.netG = build_diffusion_model(config_path)
+        with open(config_path, "r") as f:
+            config = json.load(f)
+
+        self.netG = fastdiffsr_modules.networks.define_G(config)
         load_pretrained_weights(self.netG, checkpoint_path)
  
     # Temperature scaling helpers
@@ -238,8 +190,11 @@ class FastDiffSRModule(pl.LightningModule):
         loss = self._masked_diffusion_loss(hr, lr_up, hr_mask)
  
         self.log(
-            "train/loss", loss,
-            on_step=True, on_epoch=True, prog_bar=True,
+            "train/loss", 
+            loss,
+            on_step=True, 
+            on_epoch=True, 
+            prog_bar=True,
             batch_size=hr.shape[0],
         )
         return loss
