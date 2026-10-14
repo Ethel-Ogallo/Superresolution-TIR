@@ -225,11 +225,11 @@ class DiffBIRModule(pl.LightningModule):
         lr01 = self._to_unit_interval(lr_celsius)
         hr01 = self._to_unit_interval(hr_celsius)
 
-        # BSRNet expects a three-channel image.
+        # for BSRNet and pretrained Stable Diffusion VAE
         lr01 = lr01.repeat(1, 3, 1, 1)
-        hr_mask = batch["hr_mask"].float()
+        hr01 = hr01.repeat(1, 3, 1, 1)
 
-        # Enforce the expected mask convention: valid = 1, invalid = 0.
+        hr_mask = batch["hr_mask"].float()
         hr_mask = (hr_mask > 0.5).float()
 
         return lr01, hr01, hr_mask, hr_celsius
@@ -412,7 +412,8 @@ class DiffBIRModule(pl.LightningModule):
         sr_celsius = self._to_celsius(sr01)
         hr_celsius = hr_celsius[:, 0:1]
 
-        compute_metrics(
+        # Compute metrics using the shared benchmark implementation.
+        metrics_dict = compute_metrics(
             module=self,
             sr=sr_celsius,
             hr=hr_celsius,
@@ -420,6 +421,24 @@ class DiffBIRModule(pl.LightningModule):
             stage=stage,
             water_mask=batch.get("water_mask"),
         )
+
+        # DiffBIR-specific Lightning logging.
+        for name, value in metrics_dict.items():
+            if value is None:
+                continue
+
+            if not isinstance(value, torch.Tensor):
+                value = torch.tensor(value, device=sr_celsius.device)
+
+            self.log(
+                f"{stage}/{name}",
+                value.detach(),
+                on_step=False,
+                on_epoch=True,
+                prog_bar=(name == "water_mae" and stage == "val"),
+                logger=True,
+                sync_dist=True,
+            )
 
     def validation_step(self, batch, batch_idx):
         self._evaluate(batch, stage="val")

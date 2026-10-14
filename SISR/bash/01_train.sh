@@ -87,7 +87,7 @@ echo "Training DiffBIR model..."
 python SISR/scripts/training/01_train.py \
     --model diffbir \
     --lr 1e-4 \
-    --batch_size 1 \
+    --batch_size 4 \
     --max_epochs 1 \
     --patience 1 \
     --num_workers 0 \
