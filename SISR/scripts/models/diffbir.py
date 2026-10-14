@@ -437,7 +437,7 @@ class DiffBIRModule(pl.LightningModule):
                 on_epoch=True,
                 prog_bar=(name == "water_mae" and stage == "val"),
                 logger=True,
-                sync_dist=True,
+                batch_size=hr_celsius.shape[0],
             )
 
     def validation_step(self, batch, batch_idx):

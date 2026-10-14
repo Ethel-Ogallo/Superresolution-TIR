@@ -88,9 +88,9 @@ python SISR/scripts/training/01_train.py \
     --model diffbir \
     --lr 1e-4 \
     --batch_size 4 \
-    --max_epochs 1 \
-    --patience 1 \
+    --max_epochs 100 \
+    --patience 100 \
     --num_workers 0 \
     --project TIR_sisr_final \
-    --run_name diffbir-test \
+    --run_name diffbir \
     --group benchmark_final
