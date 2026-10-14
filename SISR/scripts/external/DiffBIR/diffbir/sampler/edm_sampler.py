@@ -1,4 +1,4 @@
-from typing import Literal, Dict, Optional, Callable
+from typing import Literal, Dict, Optional, Callable, Tuple
 import numpy as np
 import torch
 
@@ -142,7 +142,7 @@ class EDMSampler(Sampler):
         model: ControlLDM,
         device: str,
         steps: int,
-        x_size: torch.Tuple[int],
+        x_size: Tuple[int],
         cond: Dict[str, torch.Tensor],
         uncond: Dict[str, torch.Tensor],
         cfg_scale: float,

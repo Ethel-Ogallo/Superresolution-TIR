@@ -1,5 +1,5 @@
 """
-train.py — fine-tuning for TIR Super-Resolution benchmark.
+01_train.py — fine-tuning for TIR Super-Resolution benchmark.
 """
 
 import argparse
@@ -35,14 +35,11 @@ sys.path.insert(0, str(SISR_ROOT))
 from scripts.utils.dataset import SRDataset
 from scripts.utils.data_aug import train_transforms
 
-
 PATCHES_DIR = PROJECT_ROOT / "data" / "processed" / "patches"
 STATS_PATH = PATCHES_DIR / "stats.json"
-CHECKPOINT_PATH = PROJECT_ROOT / "data" / "pretrained" / "fastdiffx4.pth"
 PRETRAINED = PROJECT_ROOT / "data" / "pretrained"
 CONFIGS_DIR = SISR_ROOT / "configs"
 CKPT_DIR = SISR_ROOT / "checkpoints" / "phase2.1"
-
 
 # Reproducibility 
 def set_seed(seed=42):
@@ -66,7 +63,10 @@ PRETRAINED_PATHS = {
     "swinir":     "SwinIR_classical_x4.pth",
     "hat":        "HAT_imagenet_x4.pth",
     "realesrgan": "RealESRGAN_generator_x4.pth",
-    "fastdiffsr":   "fastdiffx4.pth",    
+    "fastdiffsr": "fastdiffx4.pth",
+    "diffbir_bsrnet":  "BSRNet.pth",
+    "diffbir_control": "v2.pth",
+    "diffbir_sd":      "v2-1_512-ema-pruned.ckpt",
 }
 
 PRETRAINED_D_PATHS = {
@@ -95,26 +95,45 @@ def get_model_class(model_name):
         from scripts.models.fastdiffsr import FastDiffSRModule
         return FastDiffSRModule
 
+    if model_name == "diffbir":
+        from scripts.models.diffbir import DiffBIRModule
+        return DiffBIRModule
+
     raise ValueError(f"Unknown model: {model_name}")
 
 
 def build_model(model_name, cfg, stats, args):
     cls = get_model_class(model_name)
 
-    pretrained_path = str(
-        PRETRAINED / PRETRAINED_PATHS[model_name]
-    )
-
+    # FastDiffSR 
     if model_name == "fastdiffsr":
         model = cls(
             stats_path=str(STATS_PATH),
             learning_rate=args.lr,
-            checkpoint_path=str(CHECKPOINT_PATH),
+            checkpoint_path=str(PRETRAINED / PRETRAINED_PATHS["fastdiffsr"]),
         )
-        print(f"[INFO] FastDiffSR checkpoint: {CHECKPOINT_PATH}")
+        print( "[INFO] FastDiffSR checkpoint:", PRETRAINED / PRETRAINED_PATHS["fastdiffsr"],)
         return model
 
-    # Common arguments for the existing models.
+    # DiffBIR
+    if model_name == "diffbir":
+        model = cls(
+            stats_path=str(STATS_PATH),
+            learning_rate=args.lr,
+            bsrnet_path=str(PRETRAINED / PRETRAINED_PATHS["diffbir_bsrnet"]),
+            controlnet_path=str(PRETRAINED / PRETRAINED_PATHS["diffbir_control"]),
+            sd_path=str(PRETRAINED / PRETRAINED_PATHS["diffbir_sd"]),
+            sample_steps=args.diffbir_steps,
+        )
+
+        print("[INFO] DiffBIR BSRNet:", PRETRAINED / PRETRAINED_PATHS["diffbir_bsrnet"],)
+        print("[INFO] DiffBIR ControlNet:",PRETRAINED / PRETRAINED_PATHS["diffbir_control"],)
+        print("[INFO] DiffBIR Stable Diffusion:",PRETRAINED / PRETRAINED_PATHS["diffbir_sd"],)
+
+        return model
+
+    # common arguments and configuration
+    pretrained_path = str(PRETRAINED / PRETRAINED_PATHS[model_name])
     common = dict(
         hr_mean=stats["hr"]["mean"],
         hr_std=stats["hr"]["std"],
@@ -135,9 +154,7 @@ def build_model(model_name, cfg, stats, args):
     }
 
     if model_name == "realesrgan":
-        model_kwargs["pretrained_d_path"] = str(
-            PRETRAINED / PRETRAINED_D_PATHS["realesrgan"]
-        )
+        model_kwargs["pretrained_d_path"] = str(PRETRAINED / PRETRAINED_D_PATHS["realesrgan"])
 
     print(f"[DEBUG] pretrained_path: {pretrained_path}")
 
@@ -147,7 +164,6 @@ def build_model(model_name, cfg, stats, args):
 # Main training function 
 def run(args):
     set_seed(args.seed)
-
     print(f"\n{'═'*60}")
     print(f"Model : {args.model.upper()} — Fine-tuning")
     print(f"{'═'*60}")
@@ -156,8 +172,12 @@ def run(args):
     with open(STATS_PATH) as f:
         stats = json.load(f)
 
-    cfg = load_config(args.model)
-    precision = cfg.get("precision", "bf16-mixed")
+    if args.model == "diffbir":
+        cfg = {}
+        precision = "16-mixed"
+    else:
+        cfg = load_config(args.model)
+        precision = cfg.get("precision", "bf16-mixed")
 
     # Datasets 
     train_ds = SRDataset(
@@ -176,7 +196,6 @@ def run(args):
         transform=None,
         use_water_mask=True,   
     )
-
     test_ds = SRDataset(
         split="test",
         patches_dir=PATCHES_DIR,
@@ -187,18 +206,9 @@ def run(args):
     )
 
     loader_kw    = dict(num_workers=args.num_workers, pin_memory=True)
-    train_loader = DataLoader(
-        train_ds, batch_size=args.batch_size,
-        shuffle=True, **loader_kw
-    )
-    val_loader = DataLoader(
-        val_ds, batch_size=args.batch_size,
-        shuffle=False, **loader_kw
-    )
-    test_loader = DataLoader(
-        test_ds, batch_size=args.batch_size,
-        shuffle=False, **loader_kw
-    )
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size,shuffle=True, **loader_kw)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size,shuffle=False, **loader_kw)
+    test_loader = DataLoader(test_ds, batch_size=args.batch_size,shuffle=False, **loader_kw)
 
     #  Model 
     model = build_model(args.model, cfg, stats, args)
@@ -249,9 +259,7 @@ def run(args):
 
     # Train 
     trainer.fit(model, train_loader, val_loader)
-
     print(f"\n[INFO] Best checkpoint: {ckpt_callback.best_model_path}")
-    # print(f"[INFO] Best val/water_mae:   {ckpt_callback.best_model_score:.4f}")
 
     # test
     trainer.test(model, test_loader, ckpt_path=ckpt_callback.best_model_path)
@@ -265,7 +273,13 @@ def run(args):
 def parse_args():
     p = argparse.ArgumentParser(description="fine-tuning")
     p.add_argument("--model",required=True,
-                   choices=["edsr", "swinir", "hat", "realesrgan", "fastdiffsr"],)
+                   choices=["edsr", "swinir", "hat", "realesrgan", "fastdiffsr", "diffbir"])
+    p.add_argument(
+        "--diffbir_steps",
+        type=int,
+        default=10,
+        help="DiffBIR sampling steps for validation/test."
+    )
     p.add_argument("--lr",          type=float, default=1e-4)
     p.add_argument("--batch_size",  type=int,   default=4)
     p.add_argument("--max_epochs",  type=int,   default=100)

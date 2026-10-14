@@ -1,11 +1,11 @@
 #!/bin/bash -l
 #SBATCH --job-name=bench
-#SBATCH -p longrun
+#SBATCH -p shortrun
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=32G
-#SBATCH -w sn1
-#SBATCH --time=48:00:0  
+# #SBATCH -w sn1
+# #SBATCH --time=48:00:0  
 
 # -------- Environment --------
 export WANDB_API_KEY="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"   
@@ -70,14 +70,27 @@ cd /share/castor/home/e2406751/Superresolution-TIR
 #     --group benchmark_final
 
 # FastDiffSR
-echo "Training FastDiffSR model..."
+# echo "Training FastDiffSR model..."
+# python SISR/scripts/training/01_train.py \
+#     --model fastdiffsr \
+#     --lr 1e-4 \
+#     --batch_size 4 \
+#     --max_epochs 100 \
+#     --patience 100 \
+#     --num_workers 0 \
+#     --project TIR_sisr_final \
+#     --run_name fastdiffsr \
+#     --group benchmark_final
+
+# DiffBIR
+echo "Training DiffBIR model..."
 python SISR/scripts/training/01_train.py \
-    --model fastdiffsr \
+    --model diffbir \
     --lr 1e-4 \
-    --batch_size 4 \
-    --max_epochs 100 \
-    --patience 100 \
+    --batch_size 1 \
+    --max_epochs 1 \
+    --patience 1 \
     --num_workers 0 \
     --project TIR_sisr_final \
-    --run_name fastdiffsr_v3 \
+    --run_name difbir \
     --group benchmark_final
