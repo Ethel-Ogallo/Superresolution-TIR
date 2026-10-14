@@ -81,6 +81,13 @@ class DiffBIRModule(pl.LightningModule):
         self.temp_min = float(min(stats["hr"]["min"], stats["lr"]["min"]))
         self.temp_max = float(max(stats["hr"]["max"], stats["lr"]["max"]))
 
+        # Metric normalization: use the same HR-based range as other models.
+        self.DATA_RANGE = float(stats["hr_data_range"])
+        self.DATA_MIN = float(stats["hr_percentiles"]["p1"])
+
+        if self.DATA_RANGE <= 0:
+            raise ValueError("Invalid HR data range in stats JSON.")
+
         if self.temp_max <= self.temp_min:
             raise ValueError("Invalid temperature range in stats JSON.")
 

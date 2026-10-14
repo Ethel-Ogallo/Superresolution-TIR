@@ -92,5 +92,5 @@ python SISR/scripts/training/01_train.py \
     --patience 1 \
     --num_workers 0 \
     --project TIR_sisr_final \
-    --run_name difbir \
+    --run_name diffbir-test \
     --group benchmark_final

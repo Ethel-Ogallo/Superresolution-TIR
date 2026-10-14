@@ -118,11 +118,17 @@ def build_model(model_name, cfg, stats, args):
     # DiffBIR
     if model_name == "diffbir":
         model = cls(
-            stats_path=str(STATS_PATH),
+            stats_json=str(STATS_PATH),
             learning_rate=args.lr,
-            bsrnet_path=str(PRETRAINED / PRETRAINED_PATHS["diffbir_bsrnet"]),
-            controlnet_path=str(PRETRAINED / PRETRAINED_PATHS["diffbir_control"]),
-            sd_path=str(PRETRAINED / PRETRAINED_PATHS["diffbir_sd"]),
+            bsrnet_checkpoint=str(
+                PRETRAINED / PRETRAINED_PATHS["diffbir_bsrnet"]
+            ),
+            controlnet_checkpoint=str(
+                PRETRAINED / PRETRAINED_PATHS["diffbir_control"]
+            ),
+            sd_checkpoint=str(
+                PRETRAINED / PRETRAINED_PATHS["diffbir_sd"]
+            ),
             sample_steps=args.diffbir_steps,
         )
 
