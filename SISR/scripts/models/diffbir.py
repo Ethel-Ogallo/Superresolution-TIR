@@ -37,14 +37,8 @@ from diffbir.sampler.spaced_sampler import SpacedSampler
 # Lightning module
 class DiffBIRModule(pl.LightningModule):
     """
-    DiffBIR-v2 adapted for paired thermal infrared super-resolution.
-
-    Normalization:
-        The dataset's z-score normalization is reversed before converting
-        temperatures to the [0, 1] range expected by BSRNet and to the
-        [-1, 1] range expected by the Stable Diffusion VAE.
+    Lightning adapter for pretrained DiffBIR.
     """
-
     def __init__(
         self,
         stats_json: str,
@@ -65,7 +59,7 @@ class DiffBIRModule(pl.LightningModule):
         self.weight_decay = weight_decay
         self.sample_steps = sample_steps
 
-        # Load temperature normalization statistics.
+        # --- Dataset statistics ---
         stats_path = Path(stats_json)
         if not stats_path.is_absolute():
             stats_path = PROJECT_ROOT / stats_path
@@ -77,11 +71,8 @@ class DiffBIRModule(pl.LightningModule):
         self.hr_std = float(stats["hr"]["std"])
         self.lr_mean = float(stats["lr"]["mean"])
         self.lr_std = float(stats["lr"]["std"])
-
         self.temp_min = float(min(stats["hr"]["min"], stats["lr"]["min"]))
         self.temp_max = float(max(stats["hr"]["max"], stats["lr"]["max"]))
-
-        # Metric normalization: use the same HR-based range as other models.
         self.DATA_RANGE = float(stats["hr_data_range"])
         self.DATA_MIN = float(stats["hr_percentiles"]["p1"])
 
@@ -115,16 +106,11 @@ class DiffBIRModule(pl.LightningModule):
             if not path.exists():
                 raise FileNotFoundError(f"Required DiffBIR file not found: {path}")
 
-        # Load the BSRNet conditioning network.-
+        # Load the BSRNet conditioning network.
         bsrnet_cfg = OmegaConf.load(bsrnet_cfg_path)
         self.bsrnet = instantiate_from_config(bsrnet_cfg)
-        bsrnet_state = torch.load(
-            bsrnet_path,
-            map_location="cpu",
-            weights_only=False,
-        )
 
-        # The checkpoint was verified to be a raw state dictionary.
+        bsrnet_state = torch.load( bsrnet_path, map_location="cpu", weights_only=False,)
         self.bsrnet.load_state_dict(bsrnet_state, strict=True)
         self.bsrnet.eval()
         for parameter in self.bsrnet.parameters():
@@ -177,39 +163,31 @@ class DiffBIRModule(pl.LightningModule):
 
         self.cldm.eval()
         self.diffusion.eval()
-
-        # Ensure the ControlNet remains trainable.
         self.cldm.controlnet.train()
 
         print("[DiffBIR] Model initialized.")
         print(f"[DiffBIR] Stable Diffusion: {sd_path}")
         print(f"[DiffBIR] ControlNet: {controlnet_path}")
         print(f"[DiffBIR] BSRNet: {bsrnet_path}")
-        print("[DiffBIR] Trainable component: ControlNet")
 
     #  Normalization helpers
     @staticmethod
-    def _single_channel(x: torch.Tensor) -> torch.Tensor:
+    def _single_channel(x):
         """Use the first channel when the dataset repeats TIR three times."""
         if x.ndim != 4:
             raise ValueError(f"Expected [B,C,H,W], received {tuple(x.shape)}")
         return x[:, 0:1]
 
-    def _to_physical(
-        self,
-        x: torch.Tensor,
-        mean: float,
-        std: float,
-    ) -> torch.Tensor:
+    def _to_physical(self,x,mean,std,):
         """Reverse dataset z-score normalization to recover Celsius."""
         return x * std + mean
 
-    def _to_unit_interval(self, temperature: torch.Tensor) -> torch.Tensor:
+    def _to_unit_interval(self, temperature):
         """Convert Celsius to [0, 1] for BSRNet and Stable Diffusion conditioning."""
         temperature = (temperature - self.temp_min) / (self.temp_max - self.temp_min)
         return temperature.clamp(0.0, 1.0)
 
-    def _to_celsius(self, image: torch.Tensor) -> torch.Tensor:
+    def _to_celsius(self, image):
         """Convert a [0, 1] model output back to Celsius."""
         image = image.clamp(0.0, 1.0)
         return image * (self.temp_max - self.temp_min) + self.temp_min
@@ -236,7 +214,7 @@ class DiffBIRModule(pl.LightningModule):
 
     # Conditioning
     @torch.no_grad()
-    def _make_condition(self, lr01: torch.Tensor):
+    def _make_condition(self, lr01):
         clean = self.bsrnet(lr01)
         clean = clean.clamp(0.0, 1.0)  # Ensure the BSRNet output is in [0, 1].
 
@@ -250,27 +228,11 @@ class DiffBIRModule(pl.LightningModule):
         return condition
 
     #  Masked diffusion loss
-    def _masked_diffusion_loss(
-        self,
-        z_hr: torch.Tensor,
-        timesteps: torch.Tensor,
-        condition: dict,
-        hr_mask: torch.Tensor,
-    ) -> torch.Tensor:
+    def _masked_diffusion_loss(self, z_hr, timesteps, condition: dict, hr_mask,):
         
         noise = torch.randn_like(z_hr)
-
-        z_noisy = self.diffusion.q_sample(
-            x_start=z_hr,
-            t=timesteps,
-            noise=noise,
-        )
-
-        prediction = self.cldm(
-            z_noisy,
-            timesteps,
-            condition,
-        )
+        z_noisy = self.diffusion.q_sample(x_start=z_hr, t=timesteps, noise=noise,)
+        prediction = self.cldm(z_noisy, timesteps, condition,)
 
         if self.diffusion.parameterization == "x0":
             target = z_hr
@@ -288,21 +250,16 @@ class DiffBIRModule(pl.LightningModule):
                 f"{self.diffusion.parameterization}"
             )
 
-        elementwise_loss = self.diffusion.get_loss(
-            prediction,
-            target,
-            mean=False,
-        )
+        elementwise_loss = self.diffusion.get_loss(prediction, target, mean=False,)
 
         # Map the HR validity mask to the VAE latent resolution.
         latent_mask = F.interpolate(
             hr_mask,
-            size=z_hr.shape[-2:],
+            size=z_hr.shape[-2:], 
             mode="nearest",
-        )
+            )
 
         latent_mask = latent_mask.expand_as(elementwise_loss)
-
         numerator = (elementwise_loss * latent_mask).sum()
         denominator = latent_mask.sum().clamp_min(1.0)
 
@@ -311,16 +268,12 @@ class DiffBIRModule(pl.LightningModule):
     #  Training
     def training_step(self, batch, batch_idx):
         lr01, hr01, hr_mask, _ = self._prepare_batch(batch)
-
-        # The HR image must be mapped to [-1, 1] before VAE encoding.
-        hr_for_vae = hr01 * 2.0 - 1.0
+        
+        hr_for_vae = hr01 * 2.0 - 1.0  # The HR image must be mapped to [-1, 1] before VAE encoding.
 
         # Only ControlNet is optimized.
         with torch.no_grad():
-            z_hr = self.cldm.vae_encode(
-                hr_for_vae,
-                sample=False,
-            )
+            z_hr = self.cldm.vae_encode(hr_for_vae, sample=False,)
             condition = self._make_condition(lr01)
 
         timesteps = torch.randint(
@@ -351,19 +304,9 @@ class DiffBIRModule(pl.LightningModule):
     #  Foward pass for inference
     @torch.no_grad()
     def forward(self, lr01: torch.Tensor) -> torch.Tensor:
-        """
-        Produce a ×4 TIR estimate using the official DiffBIR sampler.
-
-        Args:
-            lr01: LR image in [0, 1], [B, 3, H, W].
-
-        Returns:
-            SR estimate in [0, 1], [B, 1, 4H, 4W].
-        """
         condition = self._make_condition(lr01)
 
-        # Unconditional text embedding uses an empty prompt.
-        # The image condition is zeroed for classifier-free guidance.
+        # Unconditional text embedding uses an empty prompt. The image condition is zeroed for classifier-free guidance.
         uncond = {
             "c_txt": condition["c_txt"],
             "c_img": torch.zeros_like(condition["c_img"]),
@@ -393,11 +336,8 @@ class DiffBIRModule(pl.LightningModule):
         )
 
         sr = self.cldm.vae_decode(latent)
-
-        # Convert VAE output from [-1, 1] to [0, 1].
-        sr = ((sr + 1.0) / 2.0).clamp(0.0, 1.0)
-
-        # TIR is represented by three repeated channels.
+        
+        sr = ((sr + 1.0) / 2.0).clamp(0.0, 1.0) # Convert VAE output from [-1, 1] to [0, 1].
         return sr[:, 0:1]
 
     #  Validation / testing
@@ -405,14 +345,11 @@ class DiffBIRModule(pl.LightningModule):
         from scripts.utils.metrics import compute_metrics
 
         lr01, _, hr_mask, hr_celsius = self._prepare_batch(batch)
-
-        # Run diffusion inference at ×4.
         sr01 = self.forward(lr01)
 
         sr_celsius = self._to_celsius(sr01)
         hr_celsius = hr_celsius[:, 0:1]
 
-        # Compute metrics using the shared benchmark implementation.
         metrics_dict = compute_metrics(
             module=self,
             sr=sr_celsius,
@@ -422,7 +359,6 @@ class DiffBIRModule(pl.LightningModule):
             water_mask=batch.get("water_mask"),
         )
 
-        # DiffBIR-specific Lightning logging.
         for name, value in metrics_dict.items():
             if value is None:
                 continue

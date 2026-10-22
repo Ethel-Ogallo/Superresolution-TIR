@@ -32,7 +32,7 @@ def load_pretrained_weights(netG, checkpoint_path):
     """Load the pretrained checkpoint and fail loudly if anything does not match."""
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
 
-    extra_keys = {k for k in checkpoint if k.startswith("feature_extractor.")} # feature extractor not included in code
+    extra_keys = {k for k in checkpoint if k.startswith("feature_extractor.")} # feature extractor not included in original code
     weights = {k: v for k, v in checkpoint.items() if k not in extra_keys}
  
     model_state = netG.state_dict()
@@ -80,15 +80,12 @@ class FastDiffSRModule(pl.LightningModule):
         with open(stats_path, "r") as f:
             stats = json.load(f)
  
-        # Used to undo SRDataset's z-scoring.
         self.hr_mean = float(stats["hr"]["mean"])
         self.hr_std = float(stats["hr"]["std"])
         self.lr_mean = float(stats["lr"]["mean"])
         self.lr_std = float(stats["lr"]["std"])
         self.temp_min = float(min(stats["hr"]["min"], stats["lr"]["min"]))
         self.temp_max = float(max(stats["hr"]["max"], stats["lr"]["max"]))
- 
-        # Used only by compute_metrics
         self.DATA_MIN = float(stats["hr_percentiles"]["p1"])
         self.DATA_RANGE = float(stats["hr_data_range"])
  
@@ -190,7 +187,6 @@ class FastDiffSRModule(pl.LightningModule):
  
     # forward, training, validation, and test steps
     def forward(self, lr_up):
-        """Inference: denoise from pure noise, conditioned on LR (one image at a time)."""
         if lr_up.shape[0] == 1:
             return self.netG.super_resolution(lr_up)
  
