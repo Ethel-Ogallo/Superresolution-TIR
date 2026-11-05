@@ -1,0 +1,2 @@
+# activate for guest computer
+source /home/guest2026/sisr-env.sh

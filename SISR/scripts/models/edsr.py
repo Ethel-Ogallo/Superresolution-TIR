@@ -204,3 +204,4 @@ class EDSRModule(pl.LightningModule):
 
         self.body.load_state_dict(matched, strict=False)
         print(f"[INFO] Loaded {len(matched)}/{len(model_dict)} layers")
+    

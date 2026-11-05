@@ -265,3 +265,4 @@ class FastDiffSRModule(pl.LightningModule):
                 "frequency": 1,
             },
         }
+    

@@ -288,3 +288,4 @@ class RealESRGANModule(pl.LightningModule):
         state_dict = ckpt.get( "params", ckpt)
         self.net_d.load_state_dict( state_dict, strict=False)
         print("[INFO] Discriminator loaded")
+

@@ -39,8 +39,8 @@ def _compute_metrics(sr, hr, mask, module):
     ssim_scores = []
     lpips_scores = []
     
-    ssim_fn = module.ssim_fn
-    lpips_fn = module.lpips_fn
+    ssim_fn = module._ssim_metric
+    lpips_fn = module._lpips_metric
 
     for b in range(sr.shape[0]):
         valid = mask[b, 0]
@@ -83,12 +83,18 @@ def compute_metrics(module, sr, hr, hr_mask, stage, water_mask=None, w_time=None
     Main entry point for calculating land and river metrics.
     """
     # Initialize metric objects dynamically on the target device if missing
-    if not hasattr(module, 'ssim_fn'):
-        module.ssim_fn = StructuralSimilarityIndexMeasure(data_range=1.0).to(sr.device)
-        
-    if not hasattr(module, 'lpips_fn'):
-        module.lpips_fn = LearnedPerceptualImagePatchSimilarity(net_type='vgg', normalize=True).to(sr.device)
-        module.lpips_fn.eval()
+    if not hasattr(module, '_lpips_metric'):
+        object.__setattr__(
+            module, '_lpips_metric',
+            LearnedPerceptualImagePatchSimilarity(net_type='vgg',normalize=True).to(sr.device)
+        )
+        module._lpips_metric.eval()
+
+    if not hasattr(module, '_ssim_metric'):
+        object.__setattr__(
+            module, '_ssim_metric',
+            StructuralSimilarityIndexMeasure(data_range=1.0).to(sr.device)
+        )
 
     sr = torch.nan_to_num(sr)
     hr = torch.nan_to_num(hr)

@@ -11,11 +11,11 @@
 export WANDB_API_KEY="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"   
 export WANDB_DIR=/tmp
 
-source /share/common/anaconda/etc/profile.d/conda.sh
-conda activate sisr
+source /home/guest2026/sisr/bin/activate
+# conda activate sisr
 
 # -------- Project root --------
-cd /share/castor/home/e2406751/Superresolution-TIR
+cd /media/guest2026/thermal/Superresolution-TIR
 
 # # EDSR 
 # echo "Training EDSR model..."
@@ -70,27 +70,27 @@ cd /share/castor/home/e2406751/Superresolution-TIR
 #     --group benchmark_final
 
 # FastDiffSR
-# echo "Training FastDiffSR model..."
-# python SISR/scripts/training/01_train.py \
-#     --model fastdiffsr \
-#     --lr 1e-4 \
-#     --batch_size 4 \
-#     --max_epochs 100 \
-#     --patience 100 \
-#     --num_workers 0 \
-#     --project TIR_sisr_final \
-#     --run_name fastdiffsr \
-#     --group benchmark_final
-
-# DiffBIR
-echo "Training DiffBIR model..."
+echo "Training FastDiffSR model..."
 python SISR/scripts/training/01_train.py \
-    --model diffbir \
+    --model fastdiffsr \
     --lr 1e-4 \
     --batch_size 4 \
     --max_epochs 100 \
     --patience 100 \
     --num_workers 0 \
     --project TIR_sisr_final \
-    --run_name diffbir \
+    --run_name fastdiffsr2 \
     --group benchmark_final
+
+# # DiffBIR
+# echo "Training DiffBIR model..."
+# python SISR/scripts/training/01_train.py \
+#     --model diffbir \
+#     --lr 1e-4 \
+#     --batch_size 4 \
+#     --max_epochs 100 \
+#     --patience 100 \
+#     --num_workers 0 \
+#     --project TIR_sisr_final \
+#     --run_name diffbir \
+#     --group benchmark_final

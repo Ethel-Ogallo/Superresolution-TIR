@@ -48,36 +48,50 @@ class SRDataset(Dataset):
         hr = np.load(self.hr_dir / fname).astype(np.float32)
         lr = np.load(self.lr_dir / fname).astype(np.float32)
 
+        # Validity masks
         hr_mask = np.isfinite(hr).astype(np.float32)
         lr_mask = np.isfinite(lr).astype(np.float32)
 
+        # Replace invalid pixels before normalisation
         hr = np.where(hr_mask, hr, self.hr_mean)
         lr = np.where(lr_mask, lr, self.lr_mean)
 
+        # Normalisation
         hr = (hr - self.hr_mean) / self.hr_std
         lr = (lr - self.lr_mean) / self.lr_std
 
-        if self.transform:
-            lr, hr, hr_mask = self.transform(lr, hr, hr_mask)
+        # Load water mask BEFORE augmentation
+        water_mask = None
+        if self.use_water_mask:
+            water_mask = np.load(
+                self.wm_dir / fname
+            ).astype(np.float32)
 
+        # Apply identical spatial transformations to all spatial data
+        if self.transform:
+            lr, hr, hr_mask, _, _, _, water_mask = self.transform(
+                lr, hr, hr_mask,
+                water_mask=water_mask
+            )
+
+        # Channel preparation
         if self.repeat_channels:
-            hr = np.stack([hr]*3, axis=0)
-            lr = np.stack([lr]*3, axis=0)
+            hr = np.stack([hr] * 3, axis=0)
+            lr = np.stack([lr] * 3, axis=0)
         else:
             hr = hr[None]
             lr = lr[None]
 
+        # Convert to tensors
         hr = torch.from_numpy(hr).float()
         lr = torch.from_numpy(lr).float()
         hr_mask = torch.from_numpy(hr_mask)[None].float()
         lr_mask = torch.from_numpy(lr_mask)[None].float()
 
-        # water mask (optional)
-        water_mask = None
-        if self.use_water_mask:
-            wm = np.load(self.wm_dir / fname).astype(np.float32)
-            water_mask = torch.from_numpy(wm)[None].float()
+        if water_mask is not None:
+            water_mask = torch.from_numpy(water_mask)[None].float()
 
+        # Build sample
         sample = {
             "lr": lr,
             "hr": hr,
