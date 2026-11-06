@@ -1,4 +1,4 @@
-# scripts/training/train_gan.py
+# scripts/training/02_train.py
 """
 train_realesrgan_aux.py
 """
@@ -108,19 +108,9 @@ def run(args):
     val_ds = SRDataset(
         split          = "val",
         patches_dir    = PATCHES_DIR,
-        stats_path     = STATS_PATH,
-        use_aux        = True,
-        use_water_mask = True,
-        aux_dir        = str(PATCHES_DIR / "val" / "AUX"),
-        repeat_channels= False,
-        transform      = None,
-    )
-
-    test_ds = SRDataset(
-        split          = "test",
-        patches_dir    = PATCHES_DIR,
-        stats_path     = STATS_PATH,
-        use_aux        = True,
+        stats_path     = STATS_PATH,from pathlib import Path
+import json
+import sys
         use_water_mask = True,
         aux_dir        = str(PATCHES_DIR / "test" / "AUX"),
         repeat_channels= False,
