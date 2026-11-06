@@ -77,9 +77,15 @@ class SRDataset(Dataset):
         if self.use_aux and self.aux_dir is not None:
             aux = np.load(self.aux_dir / fname).astype(np.float32)
 
+        water_mask = None
+        if self.use_water_mask:
+            wm = np.load(self.wm_dir / fname).astype(np.float32)
+
         # PASS AUX INTO TRANSFORM
         if self.transform:
-            lr, hr, hr_mask, aux = self.transform(lr, hr, hr_mask, aux)
+            lr, hr, hr_mask, aux, _, _, _ = self.transform(lr, hr, hr_mask, 
+                                                           aux_lr=None, aux_mid=None, 
+                                                           aux_hr=aux, water_mask=water_mask)
 
         # channel handling
         if self.repeat_channels:
@@ -94,10 +100,8 @@ class SRDataset(Dataset):
         hr_mask  = torch.from_numpy(hr_mask)[None].float()
         lr_mask  = torch.from_numpy(lr_mask)[None].float()
 
-        water_mask = None
-        if self.use_water_mask:
-            wm = np.load(self.wm_dir / fname).astype(np.float32)
-            water_mask = torch.from_numpy(wm)[None].float()
+        if water_mask is not None:
+            water_mask = torch.from_numpy(water_mask)[None].float()
 
         sample = {
             "lr":      lr,
