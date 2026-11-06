@@ -108,9 +108,7 @@ def run(args):
     val_ds = SRDataset(
         split          = "val",
         patches_dir    = PATCHES_DIR,
-        stats_path     = STATS_PATH,from pathlib import Path
-import json
-import sys
+        stats_path     = STATS_PATH
         use_water_mask = True,
         aux_dir        = str(PATCHES_DIR / "test" / "AUX"),
         repeat_channels= False,

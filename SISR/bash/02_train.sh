@@ -1,50 +1,62 @@
 #!/bin/bash -l
-#SBATCH --job-name=aux_sisr
-#SBATCH -p longrun
-#SBATCH --gres=gpu:1
-#SBATCH -w sn1
-#SBATCH --cpus-per-task=6
-#SBATCH --mem=32G
+# #SBATCH --job-name=aux_sisr
+# #SBATCH -p longrun
+# #SBATCH --gres=gpu:1
+# #SBATCH -w sn1
+# #SBATCH --cpus-per-task=6
+# #SBATCH --mem=32G
 
 # -------- Environment --------
-export WANDB_API_KEY=""   
+export WANDB_API_KEY="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"   
 export WANDB_DIR=/tmp
 
-source /share/common/anaconda/etc/profile.d/conda.sh
-conda activate sisr
+source /home/guest2026/sisr/bin/activate
+# conda activate sisr
 
 # -------- Project root (all relative paths resolve from here) --------
-cd /share/castor/home/e2406751/Superresolution-TIR
-# mkdir -p logs checkpoints/dev_v3
+cd /media/guest2026/thermal/Superresolution-TIR
+# mkdir -p logs checkpoints/fastdiff
 
 # echo "projection input with aux channels"
-python -m scripts.training.train_gan \
-    --lr 1e-4 \
-    --batch_size 4 \
-    --max_epochs 100 \
-    --patience 30 \
-    --num_workers 4 \
-    --use_aux 1 \
-    --adaptation_strategy projection \
-    --freeze_backbone 0\
-    --project TIR_sisr_final \
-    --run_name projected4 \
-    --group aux_ablation
+# python -m scripts.training.train_gan \
+#     --lr 1e-4 \
+#     --batch_size 4 \
+#     --max_epochs 100 \
+#     --patience 30 \
+#     --num_workers 4 \
+#     --use_aux 1 \
+#     --adaptation_strategy projection \
+#     --freeze_backbone 0\
+#     --project TIR_sisr_final \
+#     --run_name projected4 \
+#     --group aux_ablation
 
-echo "direct aux input with pretrained mean"
-python -m scripts.training.train_gan \
+# echo "direct aux input with pretrained mean"
+# python -m scripts.training.train_gan \
+#     --lr 1e-4 \
+#     --batch_size 4 \
+#     --max_epochs 100 \
+#     --patience 30 \
+#     --num_workers 4 \
+#     --use_aux 1 \
+#     --adaptation_strategy direct \
+#     --input_init pretrained_mean \
+#     --freeze_backbone 0\
+#     --project TIR_sisr_final \
+#     --run_name direct4 \
+#     --group aux_ablation
+
+# FastDiffSR
+echo "Training FastDiffSR with aux..."
+python SISR/scripts/training/02_diff_train.py \
     --lr 1e-4 \
-    --batch_size 4 \
-    --max_epochs 100 \
-    --patience 30 \
+    --batch_size 1 \
+    --max_epochs 1 \
     --num_workers 4 \
-    --use_aux 1 \
-    --adaptation_strategy direct \
-    --input_init pretrained_mean \
-    --freeze_backbone 0\
+    --limit_val_batches 2 \
     --project TIR_sisr_final \
-    --run_name direct4 \
-    --group aux_ablation
+    --run_name aux_test \
+    --group fastdiff
 
 # # direct + pretrained mean — frozen  
 # python -m scripts.training.train_realesrgan_aux \
