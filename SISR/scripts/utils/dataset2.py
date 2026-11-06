@@ -122,18 +122,35 @@ class SRDataset(Dataset):
         sample["date_gap_days"] = torch.tensor(float(meta.get("date_gap_days", 0.0)), dtype=torch.float32,)
 
         # ── build time channels for model input ─────────────────────
-        H, W = lr.shape[-2], lr.shape[-1]
+        # H, W = lr.shape[-2], lr.shape[-1]
 
-        # lr_time = float(meta.get("lr_time", 10.0))
+        # # lr_time = float(meta.get("lr_time", 10.0))
+        # time_gap_hours = float(meta.get("time_gap_hours", 0.0))
+        # date_gap_days = float(meta.get("date_gap_days", 0.0))
+
+        # time_channels = np.stack([
+        #     # np.full((H, W), lr_time / 24.0, dtype=np.float32),
+        #     np.full((H, W), time_gap_hours / 24.0, dtype=np.float32),
+        #     np.full((H, W), date_gap_days / 365.0, dtype=np.float32),
+        # ], axis=0)
+
+        # sample["time_channels"] = torch.from_numpy(time_channels).float()
+
+        # EDIT for FastDiffSR-Guided expects 256x256 input
+        # Build time channels at auxiliary resolution
+        if aux is not None:
+            H, W = aux.shape[-2:]
+        else:
+            H, W = lr.shape[-2:]
+
         time_gap_hours = float(meta.get("time_gap_hours", 0.0))
         date_gap_days = float(meta.get("date_gap_days", 0.0))
 
         time_channels = np.stack([
-            # np.full((H, W), lr_time / 24.0, dtype=np.float32),
             np.full((H, W), time_gap_hours / 24.0, dtype=np.float32),
             np.full((H, W), date_gap_days / 365.0, dtype=np.float32),
         ], axis=0)
 
         sample["time_channels"] = torch.from_numpy(time_channels).float()
-
+        
         return sample
