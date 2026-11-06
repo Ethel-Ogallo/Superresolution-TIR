@@ -1,6 +1,6 @@
 # scripts/training/02_train.py
 """
-train_realesrgan_aux.py
+train RealESRGAN with auxiliary channels 
 """
 
 import argparse
