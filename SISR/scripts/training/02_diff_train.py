@@ -120,6 +120,11 @@ def run(args):
 
     #  Check one dataset sample
     sample = train_ds[0]
+    print("\n[DEBUG] Dataset inspection")
+    print("Dataset use_aux:", train_ds.use_aux)
+    print("Dataset aux_dir:", train_ds.aux_dir)
+    print("Aux directory exists:", train_ds.aux_dir.exists())
+    print("Available sample keys:", sample.keys())
     print("\n[INFO] Checking dataset sample...")
     print("LR:", sample["lr"].shape)
     print("HR:", sample["hr"].shape)
