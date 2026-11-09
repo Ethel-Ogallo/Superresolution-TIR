@@ -120,11 +120,11 @@ def run(args):
 
     #  Check one dataset sample
     sample = train_ds[0]
-    print("\n[DEBUG] Dataset inspection")
-    print("Dataset use_aux:", train_ds.use_aux)
-    print("Dataset aux_dir:", train_ds.aux_dir)
-    print("Aux directory exists:", train_ds.aux_dir.exists())
-    print("Available sample keys:", sample.keys())
+    # print("\n[DEBUG] Dataset inspection")
+    # print("Dataset use_aux:", train_ds.use_aux)
+    # print("Dataset aux_dir:", train_ds.aux_dir)
+    # print("Aux directory exists:", train_ds.aux_dir.exists())
+    # print("Available sample keys:", sample.keys())
     print("\n[INFO] Checking dataset sample...")
     print("LR:", sample["lr"].shape)
     print("HR:", sample["hr"].shape)
@@ -134,11 +134,10 @@ def run(args):
 
     assert sample["aux"].shape[0] == 23
     assert sample["time_channels"].shape[0] == 2
-
     assert sample["aux"].shape[-2:] == (256, 256)
     assert sample["time_channels"].shape[-2:] == (256, 256)
 
-    print("[INFO] Dataset sample passed.")
+    # print("[INFO] Dataset sample passed.")
 
     # --------------------------------------------------------
     # DataLoaders
@@ -169,7 +168,7 @@ def run(args):
         monitor="val/water_mae",
         mode="min",
         save_top_k=1,
-        save_last=True,
+        save_last=False,
         verbose=True,
     )
 
@@ -195,10 +194,7 @@ def run(args):
         precision=args.precision,
         logger=wandb_logger,
         callbacks=callbacks,
-        log_every_n_steps=5,
-        num_sanity_val_steps=0,
-        limit_val_batches=args.limit_val_batches,
-        limit_train_batches=1.0,
+        log_every_n_steps=10,
     )
 
     #  Training
@@ -219,12 +215,12 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument( "--lr", type=float, default=1e-5, )
     p.add_argument("--weight_decay", type=float,default=1e-6,)
-    p.add_argument("--batch_size", type=int, default=1,)
-    p.add_argument("--max_epochs",type=int, default=1,)
-    p.add_argument(  "--num_workers", type=int,default=4,)
+    p.add_argument("--batch_size", type=int, default=4,)
+    p.add_argument("--max_epochs",type=int, default=100,)
+    p.add_argument("--patience",    type=int,   default=20)
+    p.add_argument( "--num_workers", type=int,default=4,)
     p.add_argument( "--seed",type=int, default=42,)
     p.add_argument("--precision",type=str, default="32-true", )
-    p.add_argument("--limit_val_batches", type=int, default=2,)
     p.add_argument("--project", default="TIR_SISR_final", )
     p.add_argument("--run_name", default=None)
     p.add_argument("--group", default=None,)

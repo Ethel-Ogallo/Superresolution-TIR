@@ -79,11 +79,11 @@ class SRDataset(Dataset):
 
         water_mask = None
         if self.use_water_mask:
-            wm = np.load(self.wm_dir / fname).astype(np.float32)
+            water_mask = np.load(self.wm_dir / fname).astype(np.float32)
 
         # PASS AUX INTO TRANSFORM
         if self.transform:
-            lr, hr, hr_mask, aux, _, _, _ = self.transform(lr, hr, hr_mask, 
+            lr, hr, hr_mask, _, _, aux, water_mask = self.transform(lr, hr, hr_mask, 
                                                            aux_lr=None, aux_mid=None, 
                                                            aux_hr=aux, water_mask=water_mask)
 
@@ -156,5 +156,5 @@ class SRDataset(Dataset):
         ], axis=0)
 
         sample["time_channels"] = torch.from_numpy(time_channels).float()
-        
         return sample
+    
