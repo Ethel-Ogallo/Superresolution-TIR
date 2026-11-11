@@ -8,6 +8,7 @@ Adaptation:
 - Single-channel TIR, repeated to 3 channels to retain pretrained representation.
 - 23 auxiliary channels + 2 temporal channels + 6 = 31-channel denoiser input.
 - Custom sampling methods implemented in this adapter*
+- custom loss function with water/non-water/gradient components.
 """
 
 from pathlib import Path
@@ -22,11 +23,13 @@ import lightning.pytorch as pl
 
 
 # ------------- Paths and constants -----------------
-
 SISR_ROOT = Path(__file__).resolve().parents[2]
 PROJECT_ROOT = SISR_ROOT.parent
 
 sys.path.insert(0, str(SISR_ROOT))
+
+from scripts.utils.losses import combined_loss
+from scripts.utils.metrics import compute_metrics
 
 FASTDIFFSR_ROOT = SISR_ROOT / "scripts" / "external" / "FastDiffSR"
 CONFIG_PATH = FASTDIFFSR_ROOT / "config" / "sr_fastdiffsr_test_64_256.json"
@@ -125,13 +128,13 @@ class FastDiffSRModule(pl.LightningModule):
         weight_decay=1e-6,
         checkpoint_path=CHECKPOINT_PATH,
         config_path=CONFIG_PATH,
+        lambda_w=2.0,
+        lambda_nw =1.0,
+        lambda_g=0.1,
     ):
 
         super().__init__()
-
-        self.save_hyperparameters(
-            ignore=["checkpoint_path", "config_path"]
-        )
+        self.save_hyperparameters(ignore=["checkpoint_path", "config_path"])
 
         # Dataset statistics
         with open(stats_path, "r") as f:
@@ -145,6 +148,9 @@ class FastDiffSRModule(pl.LightningModule):
         self.temp_max = float(max(stats["hr"]["max"], stats["lr"]["max"]))
         self.DATA_MIN = float(stats["hr_percentiles"]["p1"])
         self.DATA_RANGE = float(stats["hr_data_range"])
+        self.lambda_w = 2.0
+        self.lambda_nw = 1.0
+        self.lambda_g = 0.1
 
         # Load original FastDiffSR architecture
         with open(config_path, "r") as f:
@@ -400,8 +406,6 @@ class FastDiffSRModule(pl.LightningModule):
         # Convert predictions and HR to Celsius.
         sr = self._to_celsius(sr_scaled[:, 0:1])
         hr = self._to_celsius(hr_scaled[:, 0:1])
-
-        from scripts.utils.metrics import compute_metrics
 
         metrics = compute_metrics(
             module=self,
