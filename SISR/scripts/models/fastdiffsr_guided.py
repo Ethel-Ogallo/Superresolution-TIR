@@ -237,47 +237,52 @@ class FastDiffSRModule(pl.LightningModule):
 
     # Training: masked diffusion loss
     def _masked_diffusion_loss(self, hr, lr_up, hr_mask, aux):
-        """
-        Diffusion noise-prediction loss.
-
-        Follows the original FastDiffSR training procedure,
-        with auxiliary data added to the denoiser input.
-
-        Denoiser input:
-            3 LR + 3 noisy residual + 25 auxiliary = 31 channels.
-        """
-
         diffusion = self.netG
 
-        x_start = diffusion.img2res(hr, lr_up) # Calculate the HR residual relative to bicubic LR.
+        # Calculate HR residual relative to bicubic-upsampled LR.
+        x_start = diffusion.img2res(hr, lr_up)
         batch_size = x_start.shape[0]
+        
+        t = np.random.randint(1, diffusion.num_timesteps + 1) # Sample diffusion timestep.
 
-        # Randomly select a diffusion timestep.
-        t = torch.randint(1, diffusion.num_timesteps + 1,(1,),).item()
-
-        # Random continuous noise strength between two timesteps.
-        lower = float(diffusion.sqrt_alphas_cumprod_prev[t - 1])
-        upper = float(diffusion.sqrt_alphas_cumprod_prev[t])
-
-        sqrt_alpha = (
-            torch.rand( batch_size, device=x_start.device,dtype=x_start.dtype,) * (upper - lower) + lower
+        # Sample continuous noise strength independently per image.
+        sqrt_alpha = torch.as_tensor(
+            np.random.uniform(
+                diffusion.sqrt_alphas_cumprod_prev[t - 1],
+                diffusion.sqrt_alphas_cumprod_prev[t],
+                size=batch_size,
+            ),
+            device=x_start.device,
+            dtype=x_start.dtype,
         ).view(batch_size, 1, 1, 1)
 
-        # Generate noise and corrupt the clean residual.
+        # Generate Gaussian noise and corrupt the clean residual.
         noise = torch.randn_like(x_start)
-        x_noisy = diffusion.q_sample(x_start = x_start,continuous_sqrt_alpha_cumprod = sqrt_alpha,noise = noise,)
+
+        x_noisy = diffusion.q_sample(
+            x_start=x_start,
+            continuous_sqrt_alpha_cumprod=sqrt_alpha,
+            noise=noise,
+        )
 
         # Concatenate LR, noisy residual and auxiliary data.
-        denoiser_input = torch.cat([lr_up, x_noisy, aux], dim=1,)
+        denoiser_input = torch.cat(
+            [lr_up, x_noisy, aux],
+            dim=1,
+        )
 
         # Predict the noise.
-        noise_pred = diffusion.denoise_fn(denoiser_input, sqrt_alpha.view(batch_size, 1),)
+        noise_pred = diffusion.denoise_fn(
+            denoiser_input,
+            sqrt_alpha.view(batch_size, -1),
+        )
 
-        # Apply the HR validity mask.
+        # Calculate masked diffusion noise-prediction L1 loss.
         mask = hr_mask.repeat(1, 3, 1, 1).to(noise_pred.dtype)
         abs_error = (noise_pred - noise).abs() * mask
 
         return abs_error.sum() / mask.sum().clamp_min(1.0)
+
 
     # Custom diffusion sampling methods
     # These replace the original methods for inference only.
