@@ -41,7 +41,7 @@ PRETRAINED_DIR = BASE / "data/pretrained"
 FASTDIFFSR_ROOT = BASE / "SISR/scripts/external/FastDiffSR"
 FASTDIFFSR_CONFIG = (FASTDIFFSR_ROOT / "config" / "sr_fastdiffsr_test_64_256.json")
 FASTDIFFSR_CHECKPOINT = PRETRAINED_DIR / "fastdiffx4.pth"
-CKPT_DIR = BASE / "checkpoints/fastdiff"
+CKPT_DIR = BASE / "SISR/checkpoints/fastdiff"
 CKPT_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -56,7 +56,7 @@ def set_seed(seed=42):
 
 # Model builder
 def build_model(args):
-    from scripts.models.fastdiffsr import FastDiffSRModule
+    from scripts.models.fastdiffsr_guided import FastDiffSRModule
     return FastDiffSRModule(
         stats_path=str(STATS_PATH),
         learning_rate=args.lr,

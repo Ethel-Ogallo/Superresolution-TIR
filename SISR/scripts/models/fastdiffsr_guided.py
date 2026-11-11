@@ -326,7 +326,7 @@ class FastDiffSRModule(pl.LightningModule):
         Sample the residual at the previous diffusion timestep.
         """
         model_mean, model_log_variance = self._p_mean_variance(
-            x=x,t=t,condition_x=condition_x,aux=aux, clip_denoised=False,)
+            x=x,t=t,condition_x=condition_x,aux=aux, clip_denoised=clip_denoised,)
 
         # Add random noise except at the final timestep.
         noise = (

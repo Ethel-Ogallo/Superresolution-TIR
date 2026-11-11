@@ -15,7 +15,7 @@ source /home/guest2026/sisr/bin/activate
 
 # -------- Project root (all relative paths resolve from here) --------
 cd /media/guest2026/thermal/Superresolution-TIR
-# mkdir -p logs checkpoints/fastdiff
+# mkdir -p checkpoints/fastdiff
 
 # echo "projection input with aux channels"
 # python -m scripts.training.train_gan \

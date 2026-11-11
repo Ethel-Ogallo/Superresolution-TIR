@@ -49,7 +49,7 @@ cd /media/guest2026/thermal/Superresolution-TIR
 #     --model hat \
 #     --lr 1e-4 \
 #     --batch_size 2 \
-#     --max_epochs 100 \
+#     --max_epochs 100 \ 
 #     --patience 100 \
 #     --num_workers 4 \
 #     --project TIR_sisr_final \
@@ -71,7 +71,7 @@ cd /media/guest2026/thermal/Superresolution-TIR
 
 # FastDiffSR
 echo "Training FastDiffSR model..."
-python SISR/scripts/training/01_train.py \
+python SISR/scripts/training/01_base_train.py \
     --model fastdiffsr \
     --lr 1e-4 \
     --batch_size 4 \
