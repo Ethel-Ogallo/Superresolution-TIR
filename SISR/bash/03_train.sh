@@ -10,52 +10,65 @@
 export WANDB_API_KEY="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"   # W&B API key for non-interactive login
 export WANDB_DIR=/tmp
 
-source /share/common/anaconda/etc/profile.d/conda.sh
-conda activate sisr
+source /home/guest2026/sisr/bin/activate
 
 # -------- Project root --------
-cd /share/home/e2406751/Superresolution-TIR
-# mkdir -p logs checkpoints/gan_v6
+cd /media/guest2026/thermal/Superresolution-TIR
+
 
 # CLI
-echo "Aux at input tuned:"
-python -m scripts.training.train \
-    --lr 1e-4 \
-    --max_epochs 150 \
-    --batch_size 4 \
-    --patience 20 \
-    --num_workers 4 \
-    --lambda_nw 0.9109 \
-    --lambda_w 2.3314 \
-    --lambda_g 0.1386 \
-    --lambda_adversarial 0.0262 \
-    --lambda_perceptual 0.4506 \
-    --d_lr_scale 1.0 \
-    --use_spade false \
-    --run_name "aux" \
-    --group "final" \
-    --project TIR_sisr_final \
+# echo "Aux at input tuned:"
+# python -m scripts.training.train \
+#     --lr 1e-4 \
+#     --max_epochs 150 \
+#     --batch_size 4 \
+#     --patience 20 \
+#     --num_workers 4 \
+#     --lambda_nw 0.9109 \
+#     --lambda_w 2.3314 \
+#     --lambda_g 0.1386 \
+#     --lambda_adversarial 0.0262 \
+#     --lambda_perceptual 0.4506 \
+#     --d_lr_scale 1.0 \
+#     --use_spade false \
+#     --run_name "aux" \
+#     --group "final" \
+#     --project TIR_sisr_final \
 
 
-echo "SPADE:"
-python -m scripts.training.train \
+# echo "SPADE:"
+# python -m scripts.training.train \
+#     --lr 1e-4 \
+#     --max_epochs 150 \
+#     --batch_size 4 \
+#     --patience 20 \
+#     --num_workers 4 \
+#     --lambda_nw 0.9109 \
+#     --lambda_w 2.3314 \
+#     --lambda_g 0.1386 \
+#     --lambda_adversarial 0.0262 \
+#     --lambda_perceptual 0.4506 \
+#     --d_lr_scale 1.0 \
+#     --use_spade true \
+#     --run_name "spade" \
+#     --group "final" \
+#     --project TIR_sisr_final 
+
+
+# FastDiffSR
+echo "Training FastDiffSR with aux..."
+python SISR/scripts/training/03_diff_train.py \
     --lr 1e-4 \
-    --max_epochs 150 \
+    --max_epochs 1 \
     --batch_size 4 \
-    --patience 20 \
-    --num_workers 4 \
-    --lambda_nw 0.9109 \
-    --lambda_w 2.3314 \
-    --lambda_g 0.1386 \
-    --lambda_adversarial 0.0262 \
-    --lambda_perceptual 0.4506 \
-    --d_lr_scale 1.0 \
-    --use_spade true \
-    --run_name "spade" \
-    --group "final" \
+    --patience 1 \
+    --num_workers 0 \
+    --lambda_g 0.2975 \
+    --lambda_w 2.0129 \
+    --lambda_nw 0.7126 \
+    --run_name "spade_test" \
+    --group "fastdiff" \
     --project TIR_sisr_final 
-
-
 
 # # lambda_adversarial:
 # # 0.02617122129541192

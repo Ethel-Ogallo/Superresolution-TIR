@@ -174,7 +174,7 @@ class FastDiffSRModule(pl.LightningModule):
         return ((tensor + 1.0) * (self.temp_max - self.temp_min) / 2.0 + self.temp_min)
 
     def _prepare_batch(self, batch):
-        # Keep one TIR channel, then convert standardized values to Celsius.
+
         lr = self._to_physical(batch["lr"][:, 0:1], self.lr_mean, self.lr_std)
         hr = self._to_physical(batch["hr"][:, 0:1], self.hr_mean, self.hr_std)
 

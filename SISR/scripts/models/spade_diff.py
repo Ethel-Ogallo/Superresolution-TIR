@@ -41,10 +41,8 @@ class SPADE(nn.Module):
 
         assert x.ndim == 4, f"Expected 4D features, got {x.shape}"
         assert seg.ndim == 4, f"Expected 4D semantic map, got {seg.shape}"
-
         assert x.shape[0] == seg.shape[0], "Batch mismatch"
         assert x.shape[-2:] == seg.shape[-2:], "Spatial mismatch"
-
         assert seg.shape[1] == self.mlp_shared[0].in_channels, (
             f"Expected {self.mlp_shared[0].in_channels} semantic channels, "
             f"got {seg.shape[1]}"
@@ -103,7 +101,7 @@ class SPADEWrapper(nn.Module):
             for layer in self.upsample_modules
         ]
 
-        expected_channels = [128, 128, 64]
+        expected_channels = [256, 256, 128]
 
         if feature_channels != expected_channels:
             raise ValueError(
