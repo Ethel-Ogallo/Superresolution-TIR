@@ -26,7 +26,7 @@ FASTDIFFSR_ROOT = SISR_ROOT / "scripts" / "external" / "FastDiffSR"
 sys.path.insert(0, str(SISR_ROOT))
 sys.path.insert(0, str(FASTDIFFSR_ROOT.parent))
 
-from scripts.utils.losses import combined_loss
+from scripts.utils.custom_loss import combined_loss
 from scripts.utils.metrics import compute_metrics
 from FastDiffSR import networks
 
@@ -123,6 +123,8 @@ class FastDiffSRModule(pl.LightningModule):
         self.lr_std = float(stats["lr"]["std"])
         self.temp_min = float(min(stats["hr"]["min"], stats["lr"]["min"]))
         self.temp_max = float(max(stats["hr"]["max"], stats["lr"]["max"]))
+        self.DATA_RANGE = float(stats["hr_data_range"])
+        self.DATA_MIN = float(stats["hr_percentiles"]["p1"])
         self.lambda_w = lambda_w
         self.lambda_nw = lambda_nw
         self.lambda_g = lambda_g

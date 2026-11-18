@@ -84,23 +84,22 @@ def combined_loss(sr, hr, hr_mask, water_mask,
                   lambda_nw, lambda_w, lambda_g,
                   time_channels=None):
     """
-    Fully vectorized combined loss. No Python loop over batch.
-    All per-sample operations run in parallel on GPU.
+    combined reconsruction loss with temporal weighting
     """
     # Masks 
     m_w  = hr_mask * water_mask                                   
     m_nw = hr_mask * (1.0 - water_mask)                         
 
-    # Per-sample sub-losses [B] 
+    # Per-sample losses
     l_nw = regional_masked_l1_batch(sr, hr, m_nw)                
     l_w  = regional_masked_l1_batch(sr, hr, m_w)                
     l_g  = gradient_loss_batch(sr, hr, hr_mask)               
 
-    # Scale normalization so lambdas are directly comparable
-    eps   = 1e-2
-    l_nw_n = l_nw / (l_nw.detach().mean() + eps)
-    l_w_n  = l_w  / (l_w.detach().mean()  + eps)
-    l_g_n  = l_g  / (l_g.detach().mean()  + eps)
+    # Scale normalization 
+    # eps   = 1e-2
+    # l_nw_n = l_nw / (l_nw.detach().mean() + eps)
+    # l_w_n  = l_w  / (l_w.detach().mean()  + eps)
+    # l_g_n  = l_g  / (l_g.detach().mean()  + eps)
 
     # Temporal weights [B]
     if time_channels is not None:
