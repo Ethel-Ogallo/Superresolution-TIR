@@ -57,12 +57,16 @@ def set_seed(seed=42):
 # Model builder
 def build_model(args):
     from scripts.models.fastdiffsr_guided import FastDiffSRModule
+
     return FastDiffSRModule(
         stats_path=str(STATS_PATH),
         learning_rate=args.lr,
         weight_decay=args.weight_decay,
         checkpoint_path=str(FASTDIFFSR_CHECKPOINT),
         config_path=str(FASTDIFFSR_CONFIG),
+        lambda_nw=args.lambda_nw,
+        lambda_w=args.lambda_w,
+        lambda_g=args.lambda_g,
     )
 
 
@@ -219,6 +223,9 @@ def parse_args():
     p.add_argument("--batch_size", type=int, default=4)
     p.add_argument("--max_epochs", type=int, default=100)
     p.add_argument("--patience", type=int, default=15)
+    p.add_argument("--lambda_nw", type=float, default=1.0)
+    p.add_argument("--lambda_w", type=float, default=2.0)
+    p.add_argument("--lambda_g", type=float, default=0.1)
     p.add_argument( "--num_workers", type=int,default=4,)
     p.add_argument( "--seed",type=int, default=42,)
     p.add_argument("--precision",type=str, default="32-true", )
