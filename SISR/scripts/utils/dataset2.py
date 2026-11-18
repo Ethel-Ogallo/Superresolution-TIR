@@ -16,9 +16,8 @@ class SRDataset(Dataset):
         split,
         patches_dir,
         stats_path,
-        # Input modes
         use_water_mask=False,
-        repeat_channels=False,   # keep for baseline compatibility
+        repeat_channels=False, 
         use_aux=False, 
         aux_dir=None,
         transform=None,
@@ -27,10 +26,8 @@ class SRDataset(Dataset):
         self.split = split
         self.patches_dir = Path(patches_dir)
         self.transform = transform
-
         self.use_water_mask = use_water_mask
         self.repeat_channels = repeat_channels
-
         self.use_aux = use_aux
         self.aux_dir = Path(aux_dir) if aux_dir is not None else None
 
@@ -125,7 +122,7 @@ class SRDataset(Dataset):
         sample["time_gap_hours"] = torch.tensor(float(meta.get("time_gap_hours", 0.0)), dtype=torch.float32,)
         sample["date_gap_days"] = torch.tensor(float(meta.get("date_gap_days", 0.0)), dtype=torch.float32,)
 
-        # ── build time channels for model input ─────────────────────
+        # build time channels for model input
         # H, W = lr.shape[-2], lr.shape[-1]
 
         # # lr_time = float(meta.get("lr_time", 10.0))

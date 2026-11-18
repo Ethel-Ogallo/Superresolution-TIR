@@ -1,4 +1,4 @@
-# scripts/training/train.py
+# scripts/training/03_train.py
 
 import argparse
 import json

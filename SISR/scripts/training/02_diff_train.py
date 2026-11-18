@@ -1,7 +1,7 @@
 # scripts/training/02_diff_train.py
 
 """
-Train FastDiffSR x4 with auxiliary data .
+Train FastDiffSR x4 with auxiliary data and custom loss.
 """
 
 import argparse
@@ -192,6 +192,7 @@ def run(args):
         accelerator="gpu",
         devices=1,
         precision=args.precision,
+        accumulate_grad_batches=4,
         logger=wandb_logger,
         callbacks=callbacks,
         log_every_n_steps=10,
@@ -215,9 +216,9 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument( "--lr", type=float, default=1e-5, )
     p.add_argument("--weight_decay", type=float,default=1e-6,)
-    p.add_argument("--batch_size", type=int, default=4,)
-    p.add_argument("--max_epochs",type=int, default=100,)
-    p.add_argument("--patience",    type=int,   default=20)
+    p.add_argument("--batch_size", type=int, default=4)
+    p.add_argument("--max_epochs", type=int, default=100)
+    p.add_argument("--patience", type=int, default=15)
     p.add_argument( "--num_workers", type=int,default=4,)
     p.add_argument( "--seed",type=int, default=42,)
     p.add_argument("--precision",type=str, default="32-true", )
