@@ -164,7 +164,7 @@ class FastDiffSRModule(pl.LightningModule):
     def _to_physical(tensor, mean, std):
         """Convert dataset z-score values back to Celsius."""
         return tensor * std + mean
-
+    
     def _to_model_scale(self, tensor):
         """Map Celsius values to [-1, 1]."""
         return (2.0 * (tensor - self.temp_min) / (self.temp_max - self.temp_min) - 1.0 )
@@ -174,9 +174,11 @@ class FastDiffSRModule(pl.LightningModule):
         return ((tensor + 1.0) * (self.temp_max - self.temp_min) / 2.0 + self.temp_min)
 
     def _prepare_batch(self, batch):
+        lr = batch["lr"].squeeze(2)
+        hr = batch["hr"].squeeze(2)
 
-        lr = self._to_physical(batch["lr"][:, 0:1], self.lr_mean, self.lr_std)
-        hr = self._to_physical(batch["hr"][:, 0:1], self.hr_mean, self.hr_std)
+        lr = self._to_physical(lr[:, 0:1], self.lr_mean, self.lr_std)
+        hr = self._to_physical(hr[:, 0:1], self.hr_mean, self.hr_std)
 
         # Map both images to [-1, 1].
         lr = self._to_model_scale(lr)

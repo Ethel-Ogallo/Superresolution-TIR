@@ -59,14 +59,14 @@ cd /media/guest2026/thermal/Superresolution-TIR
 echo "Training FastDiffSR with aux..."
 python SISR/scripts/training/03_diff_train.py \
     --lr 1e-4 \
-    --max_epochs 1 \
+    --max_epochs 100 \
     --batch_size 4 \
-    --patience 1 \
+    --patience 20 \
     --num_workers 0 \
     --lambda_g 0.2975 \
     --lambda_w 2.0129 \
     --lambda_nw 0.7126 \
-    --run_name "spade_test" \
+    --run_name "spade" \
     --group "fastdiff" \
     --project TIR_sisr_final 
 
