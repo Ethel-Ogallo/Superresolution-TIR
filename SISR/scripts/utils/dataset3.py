@@ -1,6 +1,5 @@
 """
-Dataset for FastDiffSR TIR super-resolution
-with auxiliary input conditioning and multiscale SPADE guidance.
+Dataset TIR super-resolution with auxiliary data for SPADE conditioning.
 """
 
 import json
@@ -60,9 +59,7 @@ class SRDataset(Dataset):
         self.lr_dir = self.patches_dir / split / "LR"
         self.wm_dir = self.patches_dir / split / "WM"
 
-        self.files = sorted(
-            f.name for f in self.hr_dir.glob("*.npy")
-        )
+        self.files = sorted(f.name for f in self.hr_dir.glob("*.npy"))
 
     def __len__(self):
         return len(self.files)
