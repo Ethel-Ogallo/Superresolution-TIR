@@ -8,25 +8,18 @@ import torch
 # Paths
 # --------------------------------------------------
 
-SISR_ROOT = Path(__file__).resolve().parents[2]
-PROJECT_ROOT = SISR_ROOT.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SISR_ROOT = PROJECT_ROOT / "SISR"
 
 FASTDIFFSR_ROOT = (
     SISR_ROOT / "scripts" / "external" / "FastDiffSR"
 )
 
-CONFIG_PATH = (
-    FASTDIFFSR_ROOT / "config" / "sr_fastdiffsr_test_64_256.json"
-)
-
-CHECKPOINT_PATH = (
-    PROJECT_ROOT / "data" / "pretrained" / "fastdiffx4.pth"
-)
-
+# Allow imports from SISR/scripts/
 sys.path.insert(0, str(SISR_ROOT))
-sys.path.insert(0, str(FASTDIFFSR_ROOT.parent))
 
-from FastDiffSR import networks
+# Allow direct import of networks.py
+sys.path.insert(0, str(FASTDIFFSR_ROOT))
 
 from scripts.models.spade_diff import FastDiffSRSPADEWrapper
 from scripts.models.fastdiffsr_spade import (
@@ -34,6 +27,7 @@ from scripts.models.fastdiffsr_spade import (
     expand_input_conv,
 )
 
+import networks
 # --------------------------------------------------
 # Build original FastDiffSR
 # --------------------------------------------------

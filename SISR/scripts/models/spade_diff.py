@@ -60,7 +60,7 @@ class SPADE(nn.Module):
         return x * (1.0 + gamma) + beta
 
 
-class FastDiffSRSPADEWrapper(nn.Module):
+class SPADEWrapper(nn.Module):
     """
     Inserts multiscale SPADE modulation into the original FastDiffSR U-Net.
 
