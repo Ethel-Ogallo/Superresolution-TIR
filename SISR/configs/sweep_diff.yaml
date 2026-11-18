@@ -17,11 +17,9 @@ parameters:
   patience:
     value: 10
   num_workers:
-    value: 4
+    value: 0
   seed:
     value: 42
-  use_spade:
-    value: false
   group:
     value: "fastdiff_lambda_sweep"
 
