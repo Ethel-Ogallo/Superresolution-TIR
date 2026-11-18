@@ -116,7 +116,11 @@ class SPADEWrapper(nn.Module):
         ])
 
     def _get_cosia(self, aux: torch.Tensor) -> torch.Tensor:
-        """Extract the semantic COSIA channels."""
+        """Extract the 14 COSIA semantic channels."""
+
+        # Remove an unexpected singleton dimension, if present.
+        if aux.ndim == 5 and aux.shape[2] == 1:
+            aux = aux.squeeze(2)
 
         if aux.ndim != 4:
             raise ValueError(
@@ -132,7 +136,7 @@ class SPADEWrapper(nn.Module):
         start = self.label_start
         end = start + self.label_nc
 
-        return aux[:, start:end]
+        return aux[:, start:end, :, :]
 
     def forward(
         self,
