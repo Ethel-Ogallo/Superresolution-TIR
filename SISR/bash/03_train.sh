@@ -63,9 +63,9 @@ python SISR/scripts/training/03_diff_train.py \
     --batch_size 4 \
     --patience 20 \
     --num_workers 0 \
-    --lambda_g 0.2975 \
-    --lambda_w 2.0129 \
-    --lambda_nw 0.7126 \
+    --lambda_g 0.1267 \
+    --lambda_w 2.7101 \
+    --lambda_nw 0.9035 \
     --run_name "spade" \
     --group "fastdiff" \
     --project TIR_sisr_final 
