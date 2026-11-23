@@ -107,9 +107,11 @@ class FastDiffSRModule(pl.LightningModule):
         lambda_w=2.0,
         lambda_nw=1.0,
         lambda_g=0.1,
+        use_spade=True,
     ):
         super().__init__()
         self.save_hyperparameters(ignore=["checkpoint_path", "config_path"])
+        self.use_spade = use_spade
 
         # Dataset statistics
         with open(stats_path, "r") as f:
@@ -148,15 +150,18 @@ class FastDiffSRModule(pl.LightningModule):
 
         print("[FastDiffSR] Denoiser input expanded from 6 to 31 channels.")
 
-        # Wrap the pretrained denoiser with multiscale SPADE conditioning.
-        self.netG.denoise_fn = SPADEWrapper(
-            unet=self.netG.denoise_fn,
-            aux_channels=23,
-            label_nc=14,
-            label_start=8,
-        )
+        # Optionally wrap the denoiser with multiscale SPADE.
+        if self.use_spade:
+            self.netG.denoise_fn = SPADEWrapper(
+                unet=self.netG.denoise_fn,
+                aux_channels=23,
+                label_nc=14,
+                label_start=8,
+            )
 
-        print("[FastDiffSR] SPADE conditioning initialized.")
+            print("[FastDiffSR] SPADE conditioning enabled.")
+        else:
+            print("[FastDiffSR] SPADE conditioning disabled.")
 
 
     # --------- Temperature scaling and batch preparation ---------
@@ -221,6 +226,23 @@ class FastDiffSRModule(pl.LightningModule):
             aux_lr, aux_mid,aux_hr,
         )
 
+    def _denoise(self, denoiser_input, noise_level, aux_lr, aux_mid, aux_hr):
+        """Run the denoiser with or without SPADE conditioning."""
+
+        if self.use_spade:
+            return self.netG.denoise_fn(
+                denoiser_input,
+                noise_level,
+                aux_lr,
+                aux_mid,
+                aux_hr,
+            )
+
+        return self.netG.denoise_fn(
+            denoiser_input,
+            noise_level,
+        )
+
     # --------- Training---------
     def _training_loss(self, hr,lr_up, hr_mask, water_mask, aux, time_channels,aux_lr, aux_mid, aux_hr,):
         diffusion = self.netG
@@ -248,8 +270,13 @@ class FastDiffSRModule(pl.LightningModule):
 
         # Denoiser input: LR + noisy residual + auxiliary/temporal data.
         denoiser_input = torch.cat([lr_up, x_noisy, aux], dim=1)
-        noise_pred = diffusion.denoise_fn(denoiser_input,sqrt_alpha.view(batch_size, -1),
-                                          aux_lr,aux_mid, aux_hr, )
+        noise_pred = self._denoise(
+            denoiser_input,
+            sqrt_alpha.view(batch_size, -1),
+            aux_lr,
+            aux_mid,
+            aux_hr,
+        )
 
         # Original masked noise-prediction loss.
         diffusion_mask = hr_mask.repeat(1, 3, 1, 1).to(noise_pred.dtype)
@@ -328,7 +355,13 @@ class FastDiffSRModule(pl.LightningModule):
         )
 
         denoiser_input = torch.cat([condition_x, x, aux], dim=1)
-        noise_pred = diffusion.denoise_fn(denoiser_input,noise_level,aux_lr,aux_mid,aux_hr,)
+        noise_pred = self._denoise(
+            denoiser_input,
+            noise_level,
+            aux_lr,
+            aux_mid,
+            aux_hr,
+        )
 
         x_recon = diffusion.predict_start_from_noise(x, t=t, noise=noise_pred)
 

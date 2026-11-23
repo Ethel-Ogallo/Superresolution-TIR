@@ -62,13 +62,15 @@ def build_model(args):
         lambda_nw=args.lambda_nw,
         lambda_w=args.lambda_w,
         lambda_g=args.lambda_g,
+        use_spade=args.use_spade,
     )
 
 
 # TRAINING
 def run(args):
     set_seed(args.seed)
-    run_name = args.run_name or f"fastdiff_spade_{int(time.time())}"
+    model_name = "fastdiff_spade" if args.use_spade else "fastdiff_guided"
+    run_name = args.run_name or f"{model_name}_{int(time.time())}"
     stats = json.load(open(STATS_PATH))
 
     # Datasets
@@ -119,7 +121,8 @@ def run(args):
         group=args.group,
         config={
             **vars(args),
-            "model": "FastDiffSR-SPADE",
+            "model": model_name,
+            "use_spade": args.use_spade,
             "aux_channels": 23,
             "temporal_channels": 2,
             "denoiser_input_channels": 31,
@@ -186,6 +189,7 @@ def parse_args():
     p.add_argument("--lambda_nw", type=float, default=1.0)
     p.add_argument("--lambda_w", type=float, default=2.0)
     p.add_argument("--lambda_g", type=float, default=0.1)
+    p.add_argument("--use_spade",action=argparse.BooleanOptionalAction,default=True,)
     p.add_argument("--project", default="TIR_SISR_final")
     p.add_argument("--run_name", default=None)
     p.add_argument("--group", default=None)

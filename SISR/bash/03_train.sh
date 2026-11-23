@@ -63,10 +63,11 @@ python SISR/scripts/training/03_diff_train.py \
     --batch_size 4 \
     --patience 20 \
     --num_workers 0 \
+    --no-use_spade \
     --lambda_g 0.1267 \
     --lambda_w 2.7101 \
     --lambda_nw 0.9035 \
-    --run_name "spade" \
+    --run_name "aux+loss" \
     --group "fastdiff" \
     --project TIR_sisr_final 
 
