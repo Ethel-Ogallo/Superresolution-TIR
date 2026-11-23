@@ -51,11 +51,11 @@ echo "Training FastDiffSR with aux..."
 python SISR/scripts/training/02_diff_train.py \
     --lr 1e-4 \
     --batch_size 4 \
-    --max_epochs 1 \
+    --max_epochs 100 \
     --patience 20 \
     --num_workers 0 \
     --project TIR_sisr_final \
-    --run_name aux_loss_test \
+    --run_name aux_tuned \
     --group fastdiff
 
 # # direct + pretrained mean — frozen  
