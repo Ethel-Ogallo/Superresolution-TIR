@@ -7,7 +7,7 @@
 # #SBATCH --time=12:00:00 
 
 # -------- Environment --------
-export WANDB_API_KEY="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"   # W&B API key for non-interactive login
+export WANDB_API_KEY="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"   # W&B API key for non-interactive login
 export WANDB_DIR=/tmp
 
 source /home/guest2026/sisr/bin/activate
